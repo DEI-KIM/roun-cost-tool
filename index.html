@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>로운 원가설계판</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 로그인 화면 -->
+<div id="loginView" class="login-view">
+  <div class="login-card">
+    <div class="login-mark">로운</div>
+    <h1>원가설계판</h1>
+    <p class="login-sub">시즌별 목표·설계 원가를 관리하는 내부 도구입니다.</p>
+    <form id="loginForm">
+      <label>이메일
+        <input type="email" id="loginEmail" required autocomplete="username">
+      </label>
+      <label>비밀번호
+        <input type="password" id="loginPassword" required autocomplete="current-password">
+      </label>
+      <button type="submit" class="btn btn-primary btn-block">로그인</button>
+      <p id="loginError" class="form-error" hidden></p>
+    </form>
+  </div>
+</div>
+
+<!-- 앱 화면 -->
+<div id="appView" class="app-view" hidden>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">로운</span>
+      <span class="brand-sub">원가설계판</span>
+    </div>
+    <div class="season-control">
+      <label for="seasonSelect" class="season-label">시즌</label>
+      <select id="seasonSelect"></select>
+      <label for="seasonStartMonth" class="season-label">범위</label>
+      <input type="month" id="seasonStartMonth" class="season-range-input">
+      <span class="season-range-sep">~</span>
+      <input type="month" id="seasonEndMonth" class="season-range-input">
+      <button id="newSeasonBtn" class="btn btn-ghost btn-sm" type="button">+ 새 시즌</button>
+    </div>
+    <button id="logoutBtn" class="btn btn-ghost btn-sm" type="button">로그아웃</button>
+  </header>
+
+  <nav class="tab-nav">
+    <button class="tab-btn is-active" data-tab="dashboard">대시보드</button>
+    <button class="tab-btn" data-tab="input">설계원가</button>
+    <button class="tab-btn" data-tab="bom">레시피 등록</button>
+    <button class="tab-btn" data-tab="menu-consumption">메뉴별 소비액</button>
+    <button class="tab-btn" data-tab="recipes">누적 레시피</button>
+    <button class="tab-btn" data-tab="produce">농산 모니터링</button>
+    <button class="tab-btn" data-tab="usage">자재 사용량</button>
+    <button class="tab-btn" data-tab="market">시장 데이터</button>
+    <button class="tab-btn" data-tab="sales">매출/객수</button>
+  </nav>
+
+  <main class="tab-content">
+
+    <!-- Tab 1: 대시보드 -->
+    <section id="tab-dashboard" class="tab-panel is-active">
+      <div class="panel-head">
+        <h2>브랜드 원가 대시보드</h2>
+        <p class="panel-sub">선택한 시즌의 목표·설계·실적 원가율을 한눈에 비교합니다.</p>
+      </div>
+
+      <div class="kpi-row" id="kpiRow"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>실적 자동 반영</h3>
+          <span class="hint">자재 사용량·매출/객수 탭에 입력한 데이터를 바탕으로 실적을 계산합니다.</span>
+        </div>
+        <div class="grid-actions">
+          <button id="applyActualsBtn" class="btn btn-primary btn-sm" type="button">이번 시즌 실적 반영</button>
+          <span id="applyActualsMsg" class="save-msg"></span>
+        </div>
+        <div id="actualsSummary" class="actuals-summary"></div>
+      </div>
+
+      <div class="card" id="feedbackCard">
+        <div class="card-head">
+          <h3>조정 제안</h3>
+        </div>
+        <ul class="feedback-list" id="feedbackList"></ul>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>조닝별 원가 비교</h3>
+          <span class="hint">목표 g당원가·인당소비량만 입력하면 원가율은 자동 계산됩니다. 실적은 "실적 자동 반영"으로 채워집니다.</span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table" id="dashboardTable">
+            <colgroup>
+              <col style="width:16%">
+              <col><col><col><col><col><col><col><col><col>
+            </colgroup>
+            <thead>
+              <tr>
+                <th rowspan="2">구분</th>
+                <th colspan="3">원가율</th>
+                <th colspan="3">g당원가</th>
+                <th colspan="3">인당소비량</th>
+              </tr>
+              <tr>
+                <th>목표</th><th>설계</th><th>실적</th>
+                <th>목표</th><th>설계</th><th>실적</th>
+                <th>목표</th><th>설계</th><th>실적</th>
+              </tr>
+            </thead>
+            <tbody id="dashboardBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 2: 설계원가 -->
+    <section id="tab-input" class="tab-panel">
+      <div class="panel-head">
+        <h2>설계원가</h2>
+        <p class="panel-sub">이 시즌의 목표원가를 정하고, 메뉴별 설계원가를 입력합니다.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>시즌 목표원가</h3>
+          <span class="hint">목표원가율·인당소비량은 대시보드에서 카테고리별로 입력하면 자동 합산됩니다.</span>
+        </div>
+        <div class="actuals-summary">
+          <div class="a-tile"><div class="a-label">객단가 (매출/객수 탭 기준 자동산출)</div><div class="a-value" id="targetPriceDisplay">미반영</div></div>
+        </div>
+        <p class="hint">대시보드의 "이번 시즌 실적 반영"을 누르면 매출/객수 탭 데이터로 자동 계산됩니다.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>메뉴별 설계원가</h3>
+          <div class="card-head-actions">
+            <span class="hint">📋 엑셀에서 표 범위를 복사한 뒤 첫 칸에 붙여넣으면 한 번에 채워집니다.</span>
+            <button id="saveMenuGridBtn" class="btn btn-primary btn-sm" type="button">설계원가 저장</button>
+            <span id="menuSaveMsg" class="save-msg"></span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table editable-grid" id="menuGrid">
+            <thead>
+              <tr>
+                <th>카테고리</th><th>메뉴명</th><th>원가율(%)</th><th>g당원가</th><th>인당소비량(g)</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="menuGridBody"></tbody>
+          </table>
+        </div>
+        <div class="grid-actions">
+          <button id="addMenuRowBtn" class="btn btn-ghost btn-sm" type="button">+ 행 추가</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: 레시피 등록 -->
+    <section id="tab-bom" class="tab-panel">
+      <div class="panel-head">
+        <h2>레시피 등록</h2>
+        <p class="panel-sub">메뉴별로 들어가는 자재와 비율(g)을 시즌별로 등록합니다. 메뉴별 인당소비량 자동계산에 사용됩니다.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>레시피 입력</h3>
+          <div class="card-head-actions">
+            <span class="hint">📋 엑셀 표를 그대로 복사해 첫 칸에 붙여넣으세요 (시즌~자재사용량 11열, 시즌·메뉴명은 자재 줄마다 반복 입력)</span>
+            <button id="saveBomGridBtn" class="btn btn-primary btn-sm" type="button">저장</button>
+            <span id="bomSaveMsg" class="save-msg"></span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table editable-grid" id="bomGrid">
+            <thead>
+              <tr>
+                <th>시즌</th><th>메뉴명</th><th>카테고리</th><th>조리후중량</th><th>자재코드</th><th>자재명</th><th>환산계수</th><th>자재단가</th><th>전처리수율(%)</th><th>투입중량</th><th>자재사용량</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="bomGridBody"></tbody>
+          </table>
+        </div>
+        <div class="grid-actions">
+          <button id="addBomRowBtn" class="btn btn-ghost btn-sm" type="button">+ 행 추가</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>등록된 레시피</h3></div>
+        <div class="bulk-actions-row">
+          <input type="search" id="bomSearch" placeholder="메뉴명 검색">
+          <select id="bomSeasonFilter"><option value="">전체 시즌</option></select>
+          <button id="bulkDeleteBomBtn" class="btn btn-ghost btn-sm" type="button">선택 삭제</button>
+          <span id="bomBulkMsg" class="save-msg"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table wide-first" id="bomViewTable">
+            <thead>
+              <tr>
+                <th class="col-check"><input type="checkbox" id="bomSelectAll"></th>
+                <th>시즌</th><th>메뉴명</th><th>카테고리</th><th>조리후중량</th><th>자재코드</th><th>자재명</th><th>환산계수</th><th>자재단가</th><th>전처리수율(%)</th><th>투입중량</th><th>자재사용량</th>
+              </tr>
+            </thead>
+            <tbody id="bomViewBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: 메뉴별 소비액 -->
+    <section id="tab-menu-consumption" class="tab-panel">
+      <div class="panel-head">
+        <h2>메뉴별 소비액</h2>
+        <p class="panel-sub">메뉴명과 g당원가는 설계원가 탭의 현재 시즌 메뉴 기준으로 자동 표시됩니다. 인당소비량은 레시피+자재사용량+매출/객수 데이터로 자동 계산됩니다.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>현재 시즌 메뉴별 소비액</h3>
+          <div class="card-head-actions">
+            <button id="computeConsumptionBtn" class="btn btn-primary btn-sm" type="button">인당소비량 자동계산</button>
+            <span id="computeConsumptionMsg" class="save-msg"></span>
+            <span class="hint">정렬</span>
+            <select id="menuConsumptionSortSelect">
+              <option value="category">조닝순</option>
+              <option value="cost_per_gram">g당원가순</option>
+              <option value="consumption">인당소비량순</option>
+              <option value="value">인당소비액순</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table wide-first" id="menuConsumptionViewTable">
+            <thead>
+              <tr>
+                <th>시즌</th><th>조닝</th><th>메뉴명</th><th>g당원가</th><th>인당소비량</th><th>신뢰도</th><th>인당소비액</th>
+              </tr>
+            </thead>
+            <tbody id="menuConsumptionViewBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>자재 매칭 후보</h3>
+          <p class="hint">레시피의 원자재가 브랜드/공급처가 바뀌어 다른 자재코드로 사용되고 있을 수 있는 경우를 찾아 보여줍니다.</p>
+          <div class="card-head-actions">
+            <button id="findAliasCandidatesBtn" class="btn btn-ghost btn-sm" type="button">후보 찾기</button>
+            <span id="aliasCandidatesMsg" class="save-msg"></span>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table" id="aliasCandidatesTable">
+            <thead>
+              <tr>
+                <th>레시피 원자재</th><th>후보 자재(다른 코드)</th><th>후보 사용량(g)</th><th>유사도</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="aliasCandidatesBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: 농산 모니터링 -->
+    <section id="tab-produce" class="tab-panel">
+      <div class="panel-head">
+        <h2>농산 모니터링</h2>
+        <p class="panel-sub">자재 사용량 탭에서 비고가 "농산"이면서 과세여부가 "비과세"인 자재를 품목별로 모아 단가를 비교합니다. 시장단가는 시장 데이터 탭에서 이름이 비슷한 상·특 등급 항목의 g당단가 평균으로 자동 계산됩니다.</p>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>품목별 단가 비교</h3>
+          <div class="card-head-actions">
+            <span class="hint">연월</span>
+            <input type="month" id="produceMonthInput">
+            <span class="hint">정렬</span>
+            <select id="produceSortSelect">
+              <option value="name">이름순</option>
+              <option value="usage">사용액순</option>
+              <option value="target">목표절감액순</option>
+              <option value="market">시장절감액순</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table" id="produceTable">
+            <thead>
+              <tr>
+                <th>품목</th><th>타겟단가</th><th>로운(직송)</th><th>로운(구매)</th><th>시장단가</th><th>사용액</th><th>목표절감액</th><th>시장절감액</th>
+              </tr>
+            </thead>
+            <tbody id="produceTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 3: 누적 레시피 -->
+    <section id="tab-recipes" class="tab-panel">
+      <div class="panel-head">
+        <h2>누적 레시피</h2>
+        <p class="panel-sub">모든 시즌에 입력된 메뉴를 검색해 언제든 꺼내 볼 수 있습니다.</p>
+      </div>
+      <div class="card">
+        <div class="filter-row">
+          <input type="search" id="recipeSearch" placeholder="메뉴명 검색">
+          <select id="recipeSeasonFilter"><option value="">전체 시즌</option></select>
+          <select id="recipeCategoryFilter"><option value="">전체 카테고리</option></select>
+        </div>
+        <div class="bulk-actions-row">
+          <button id="bulkDeleteRecipeBtn" class="btn btn-ghost btn-sm" type="button">선택 삭제</button>
+          <span id="recipeBulkMsg" class="save-msg"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table wide-first" id="recipeLogTable">
+            <thead>
+              <tr><th class="col-check"><input type="checkbox" id="recipeSelectAll"></th><th>시즌</th><th>카테고리</th><th>메뉴명</th><th>원가율(%)</th><th>g당원가</th><th>인당소비량</th><th class="col-check"></th></tr>
+            </thead>
+            <tbody id="recipeLogBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- Tab 6: 자재 사용량 -->
+    <section id="tab-usage" class="tab-panel">
+      <div class="panel-head">
+        <h2>자재 사용량</h2>
+        <p class="panel-sub">매장별 자재 재고·실사용량 데이터를 시즌에 누적합니다.</p>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>사용량 입력</h3>
+          <span class="hint">📋 엑셀 표를 그대로 복사해 첫 칸에 붙여넣으세요 (매장코드~과세여부 19열, 비고 뒤에 품목·과세여부 칸 있음)</span>
+        </div>
+        <div class="history-year-row">
+          <span class="hint">등록 연월</span>
+          <input type="month" id="usageMonthInput">
+          <button id="saveUsageGridBtn" class="btn btn-primary btn-sm" type="button">저장</button>
+          <span id="usageSaveMsg" class="save-msg"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table editable-grid" id="usageGrid">
+            <thead>
+              <tr>
+                <th>매장코드</th><th>매장명</th><th>자재코드</th><th>자재명</th><th>재고단위</th><th>규격</th><th>환산계수</th>
+                <th>전재고수량</th><th>전재고금액</th><th>입고수량</th><th>입고금액</th>
+                <th>현재고수량</th><th>현재고금액</th><th>실사용량수량</th><th>실사용량금액</th><th>조닝</th><th>비고</th><th>품목</th><th>과세여부</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="usageGridBody"></tbody>
+          </table>
+        </div>
+        <div class="grid-actions">
+          <button id="addUsageRowBtn" class="btn btn-ghost btn-sm" type="button">+ 행 추가</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>현재 시즌 누적 현황</h3></div>
+        <div class="bulk-actions-row">
+          <span class="hint">연월</span>
+          <input type="month" id="usageViewMonthFilter">
+          <button id="bulkDeleteUsageBtn" class="btn btn-ghost btn-sm" type="button">선택 삭제</button>
+          <span id="usageBulkMsg" class="save-msg"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table wide-first" id="usageViewTable">
+            <thead>
+              <tr>
+                <th class="col-check"><input type="checkbox" id="usageSelectAll"></th>
+                <th>연월</th><th>매장명</th><th>자재명</th><th>조닝</th><th>비고</th><th>품목</th><th>과세여부</th><th>재고단위</th><th>환산계수</th>
+                <th>실사용량수량</th><th>실사용량금액</th>
+              </tr>
+            </thead>
+            <tbody id="usageViewBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab: 시장 데이터 -->
+    <section id="tab-market" class="tab-panel">
+      <div class="panel-head">
+        <h2>시장 데이터</h2>
+        <p class="panel-sub">가락시장 등 시장 단가 엑셀 파일을 업로드하면 자동으로 저장됩니다.</p>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>엑셀 업로드</h3>
+          <span class="hint">날짜/품목/품종/등급/거래단위/최저가/최고가/평균가/전일대비등락/전일평균대비/전7일평균대비/전년동월동일평균대비 순서의 엑셀 파일</span>
+        </div>
+        <div class="grid-actions">
+          <select id="marketNameSelect">
+            <option value="가락시장">가락시장</option>
+            <option value="강서시장">강서시장</option>
+          </select>
+          <input type="file" id="marketFileInput" accept=".xlsx,.xls">
+          <span id="marketUploadMsg" class="save-msg"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>저장된 시장 데이터</h3></div>
+        <div class="filter-row">
+          <input type="search" id="marketSearch" placeholder="품목 검색">
+          <input type="month" id="marketMonthFilter">
+          <select id="marketNameFilter">
+            <option value="">전체 시장</option>
+            <option value="가락시장">가락시장</option>
+            <option value="강서시장">강서시장</option>
+          </select>
+        </div>
+        <div class="bulk-actions-row">
+          <button id="bulkDeleteMarketBtn" class="btn btn-ghost btn-sm" type="button">선택 삭제</button>
+          <span id="marketBulkMsg" class="save-msg"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table wide-first" id="marketViewTable">
+            <thead>
+              <tr>
+                <th class="col-check"><input type="checkbox" id="marketSelectAll"></th>
+                <th>시장</th><th>날짜</th><th>품목</th><th>품종</th><th>등급</th><th>거래단위</th>
+                <th>최저가</th><th>최고가</th><th>평균가</th>
+              </tr>
+            </thead>
+            <tbody id="marketViewBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Tab 7: 매출/객수 -->
+    <section id="tab-sales" class="tab-panel">
+      <div class="panel-head">
+        <h2>매출/객수</h2>
+        <p class="panel-sub">매장별 일자 매출·객수 데이터를 시즌에 누적합니다.</p>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>매출/객수 입력</h3>
+          <span class="hint">📋 엑셀 표를 그대로 복사해 첫 칸에 붙여넣으세요 (매장코드~객수합계 11열)</span>
+        </div>
+        <div class="history-year-row">
+          <button id="saveSalesGridBtn" class="btn btn-primary btn-sm" type="button">저장</button>
+          <span id="salesSaveMsg" class="save-msg"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table editable-grid" id="salesGrid">
+            <thead>
+              <tr>
+                <th>매장코드</th><th>매장명</th><th>날짜</th><th>요일</th><th>휴일</th>
+                <th>매출런치</th><th>매출디너</th><th>매출합계</th>
+                <th>객수런치</th><th>객수디너</th><th>객수합계</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="salesGridBody"></tbody>
+          </table>
+        </div>
+        <div class="grid-actions">
+          <button id="addSalesRowBtn" class="btn btn-ghost btn-sm" type="button">+ 행 추가</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>현재 시즌 누적 현황</h3></div>
+        <div class="bulk-actions-row">
+          <span class="hint">연월</span>
+          <input type="month" id="salesViewMonthFilter">
+          <button id="bulkDeleteSalesBtn" class="btn btn-ghost btn-sm" type="button">선택 삭제</button>
+          <span id="salesBulkMsg" class="save-msg"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table wide-first" id="salesViewTable">
+            <thead>
+              <tr>
+                <th class="col-check"><input type="checkbox" id="salesSelectAll"></th>
+                <th>매장명</th><th>날짜</th><th>휴일</th><th>매출합계</th><th>객수합계</th>
+              </tr>
+            </thead>
+            <tbody id="salesViewBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<datalist id="taxStatusList">
+  <option value="과세">
+  <option value="비과세">
+</datalist>
+
+<datalist id="seasonNameList"></datalist>
+
+<script src="vendor/supabase.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
