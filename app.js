@@ -802,7 +802,9 @@ async function loadMenuConsumptionView() {
     const value = (m.cost_per_gram != null && consumptionPerPerson != null) ? m.cost_per_gram * consumptionPerPerson : null;
     return {
       menu_name: m.menu_name, category: m.category, cost_per_gram: m.cost_per_gram,
-      consumption_per_person: consumptionPerPerson, value, seasonName,
+      consumption_per_person: consumptionPerPerson,
+      consumption_per_person_excl_water: c?.consumption_per_person_excl_water ?? null,
+      value, seasonName,
       consumption_source: c?.consumption_source ?? null, confidence: c?.confidence ?? null,
     };
   });
@@ -838,10 +840,11 @@ function renderMenuConsumptionView() {
       <td class="cell-left">${m.menu_name}</td>
       <td>${fmtNum(m.cost_per_gram, 2)}</td>
       <td>${m.consumption_per_person != null ? fmtNum(m.consumption_per_person, 1) : '-'}</td>
+      <td>${m.consumption_per_person_excl_water != null ? fmtNum(m.consumption_per_person_excl_water, 1) : '-'}</td>
       <td>${badge}</td>
       <td>${m.value != null ? fmtNum(m.value, 0) : '-'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--muted)">설계원가 탭에 저장된 메뉴가 없습니다.</td></tr>`;
+  }).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--muted)">설계원가 탭에 저장된 메뉴가 없습니다.</td></tr>`;
 }
 
 $('#menuConsumptionSortSelect').addEventListener('change', renderMenuConsumptionView);
@@ -1260,11 +1263,25 @@ async function computeMenuConsumption() {
     });
   });
 
+  // 물(음용수/정제수)은 원가 계산엔 그대로 포함하되(g당원가가 물 포함 기준으로 잡혀있어서),
+  // 참고용으로 "물 뺀 인당소비량"도 같은 비율로 같이 계산해서 보여준다 (원가 계산에는 안 씀).
+  const WATER_CODES = ['음용수', '정제수'];
+  function waterRatio(menu) {
+    const bom = flatByMenu.get(menu);
+    const cookedWeight = cookedWeightByMenu.get(menu);
+    if (!bom || !cookedWeight) return 0;
+    const waterGrams = WATER_CODES.reduce((a, code) => a + (bom.get(code) || 0), 0);
+    return Math.min(1, waterGrams / cookedWeight);
+  }
+
   const results = finalMenus.map(menu => {
+    const wr = waterRatio(menu);
     if (consumptionOverrideByMenu.has(menu)) {
+      const cpp = consumptionOverrideByMenu.get(menu);
       return {
         menu_name: menu,
-        consumption_per_person: consumptionOverrideByMenu.get(menu),
+        consumption_per_person: cpp,
+        consumption_per_person_excl_water: cpp * (1 - wr),
         consumption_source: sourceByMenu.get(menu) ?? null,
         confidence: confidenceByMenu.get(menu) ?? null,
       };
@@ -1275,6 +1292,7 @@ async function computeMenuConsumption() {
     return {
       menu_name: menu,
       consumption_per_person,
+      consumption_per_person_excl_water: consumption_per_person != null ? consumption_per_person * (1 - wr) : null,
       consumption_source: consumption_per_person != null ? source : null,
       confidence: consumption_per_person != null ? (confidenceByMenu.get(menu) ?? null) : null,
     };
@@ -1334,6 +1352,7 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
     const upserts = results.filter(r => r.consumption_per_person != null).map(r => ({
       season_id: state.currentSeasonId, menu_name: r.menu_name,
       consumption_per_person: r.consumption_per_person,
+      consumption_per_person_excl_water: r.consumption_per_person_excl_water,
       consumption_source: r.consumption_source, confidence: r.confidence,
     }));
     if (upserts.length) {
