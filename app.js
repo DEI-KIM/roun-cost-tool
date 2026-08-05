@@ -1123,12 +1123,15 @@ async function computeMenuConsumption() {
   const designByMenu = new Map();
   (designRows || []).forEach(d => { if (d.menu_name) designByMenu.set(d.menu_name, d); });
 
-  // 자재별로 그 자재를 쓰는 최종메뉴 목록 (전용자재 판별용)
+  // 자재별로 그 자재를 쓰는 최종메뉴 목록 (전용자재 판별용).
+  // 서로 다른 자재코드라도 확정된 별칭으로 같은 그룹(find 대표코드)이면 "같은 자재"로 취급해야
+  // 마라샹궈가 쓰는 코드와 "팽이버섯" 메뉴가 쓰는 코드가 별칭으로 묶여있을 때 겹침을 놓치지 않는다.
   const materialToMenus = new Map();
   finalMenus.forEach(menu => {
     (flatByMenu.get(menu) || new Map()).forEach((grams, code) => {
-      if (!materialToMenus.has(code)) materialToMenus.set(code, new Set());
-      materialToMenus.get(code).add(menu);
+      const key = find(code);
+      if (!materialToMenus.has(key)) materialToMenus.set(key, new Set());
+      materialToMenus.get(key).add(menu);
     });
   });
 
@@ -1149,17 +1152,25 @@ async function computeMenuConsumption() {
     }
   }
 
+  // 메뉴 하나의 레시피에서, 특정 자재그룹(별칭 클러스터 대표코드)에 해당하는 그램수를 전부 합쳐서 구한다.
+  // (한 메뉴 안에 같은 자재의 서로 다른 코드가 여러 줄로 들어있을 수도 있어서 코드 하나만 보면 안 됨)
+  function clusterGramsInMenu(menu, key) {
+    let total = 0;
+    (flatByMenu.get(menu) || new Map()).forEach((grams, code) => { if (find(code) === key) total += grams; });
+    return total;
+  }
+
   // ---- 1단계: 전용자재 메뉴 ----
   const unknownMenus = [];
   finalMenus.forEach(menu => {
     const flatBOM = flatByMenu.get(menu);
     const cookedWeight = cookedWeightByMenu.get(menu);
     if (!flatBOM.size || !cookedWeight) { unknownMenus.push(menu); return; }
-    const exclusiveCodes = [...flatBOM.keys()].filter(code => materialToMenus.get(code)?.size === 1);
+    const exclusiveKeys = [...new Set([...flatBOM.keys()].map(find))].filter(key => materialToMenus.get(key)?.size === 1);
     const estimates = [];
-    exclusiveCodes.forEach(code => {
-      const U = actualByMaterial.get(code);
-      const gramsPerBatch = flatBOM.get(code);
+    exclusiveKeys.forEach(key => {
+      const U = actualByMaterial.get(key);
+      const gramsPerBatch = clusterGramsInMenu(menu, key);
       if (U != null && gramsPerBatch > 0) estimates.push(U * cookedWeight / gramsPerBatch);
     });
     if (estimates.length) {
@@ -1175,7 +1186,7 @@ async function computeMenuConsumption() {
   unknownMenus.forEach(m => menuNeighbors.set(m, new Set()));
   unknownMenus.forEach(menu => {
     (flatByMenu.get(menu) || new Map()).forEach((grams, code) => {
-      const users = materialToMenus.get(code);
+      const users = materialToMenus.get(find(code));
       if (!users || users.size < 2) return;
       [...users].filter(u => menuNeighbors.has(u)).forEach(u => {
         if (u !== menu) { menuNeighbors.get(menu).add(u); menuNeighbors.get(u).add(menu); }
@@ -1204,11 +1215,12 @@ async function computeMenuConsumption() {
       const flatBOM = flatByMenu.get(menu) || new Map();
       const cookedWeight = cookedWeightByMenu.get(menu);
       if (!cookedWeight) return;
-      flatBOM.forEach((grams, code) => {
-        const users = materialToMenus.get(code);
+      const keysSeen = new Set([...flatBOM.keys()].map(find));
+      keysSeen.forEach(key => {
+        const users = materialToMenus.get(key);
         if (!users || users.size < 2) return;
-        if (!materialUsers.has(code)) materialUsers.set(code, new Map());
-        materialUsers.get(code).set(menu, grams / cookedWeight);
+        if (!materialUsers.has(key)) materialUsers.set(key, new Map());
+        materialUsers.get(key).set(menu, clusterGramsInMenu(menu, key) / cookedWeight);
       });
     });
 
@@ -1216,17 +1228,17 @@ async function computeMenuConsumption() {
 
     // 잔여 사용량 = 실제사용량 - 이미 확정된(1단계) 메뉴들이 쓴 만큼
     const residualByMaterial = new Map();
-    materialUsers.forEach((_, code) => {
-      const U = actualByMaterial.get(code) || 0;
+    materialUsers.forEach((_, key) => {
+      const U = actualByMaterial.get(key) || 0;
       let consumedByKnown = 0;
-      (materialToMenus.get(code) || new Set()).forEach(m => {
+      (materialToMenus.get(key) || new Set()).forEach(m => {
         if (gramsProducedByMenu.has(m) && sourceByMenu.get(m) === 'exact') {
-          const g = (flatByMenu.get(m) || new Map()).get(code) || 0;
+          const g = clusterGramsInMenu(m, key);
           const cw = cookedWeightByMenu.get(m);
           if (cw) consumedByKnown += gramsProducedByMenu.get(m) * (g / cw);
         }
       });
-      residualByMaterial.set(code, Math.max(0, U - consumedByKnown));
+      residualByMaterial.set(key, Math.max(0, U - consumedByKnown));
     });
 
     // 설계원가 탭의 인당소비량을 초기 가중치로 사용 (없으면 균등 배분에서 시작)
@@ -1240,7 +1252,7 @@ async function computeMenuConsumption() {
     cluster.forEach(menu => {
       // 이 메뉴가 걸쳐 있는 자재들이 전부 잔여사용량 0이면(=실사용 근거 없음) IPF가 0으로 수렴시키는 대신 설계값으로 대체
       const flatBOM = flatByMenu.get(menu) || new Map();
-      const hasEvidence = [...flatBOM.keys()].some(code => materialUsers.has(code) && (residualByMaterial.get(code) || 0) > 1e-6);
+      const hasEvidence = [...new Set([...flatBOM.keys()].map(find))].some(key => materialUsers.has(key) && (residualByMaterial.get(key) || 0) > 1e-6);
       if (!hasEvidence) { fallbackToDesignOrUnresolved(menu); return; }
       gramsProducedByMenu.set(menu, Math.max(0, x[menu] || 0));
       sourceByMenu.set(menu, confidence >= 0.6 ? 'allocated' : 'design_fallback');
