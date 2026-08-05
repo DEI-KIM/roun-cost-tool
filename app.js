@@ -316,6 +316,7 @@ function renderKpiRow() {
   const targetPrice = t?.target_price_per_person ?? null;
   const brandTarget = weightedTotals(state.categorySummary, 'target');
   const brandActual = weightedTotals(state.categorySummary, 'actual');
+  const brandActualExclWater = state.categorySummary.reduce((a, r) => a + (Number(r.actual_consumption_per_person_excl_water) || 0), 0);
   const targetRatio = computeCostRatio(brandTarget.costPerGram, brandTarget.consumption, targetPrice);
   const actualRatio = t?.actual_cost_ratio_brand ?? null; // 자재실사용액 / (총매출/1.1), 실적 반영 버튼으로 계산됨
   const wrap = $('#kpiRow');
@@ -338,7 +339,7 @@ function renderKpiRow() {
     </div>
     <div class="kpi-tile">
       <div class="kpi-label">인당소비량 (목표 / 실적)</div>
-      <div class="kpi-value">${fmtNum(brandTarget.consumption, 0)} / ${fmtNum(brandActual.consumption, 0)}g</div>
+      <div class="kpi-value">${fmtNum(brandTarget.consumption, 0)}g / ${fmtWithExclWater(brandActual.consumption, brandActualExclWater)}g</div>
     </div>
   `;
 }
@@ -1304,11 +1305,11 @@ async function computeMenuConsumption() {
     };
   });
 
-  return { results, totalCustomers, pricePerCustomer };
+  return { results, totalCustomers, totalSales, pricePerCustomer };
 }
 
 // 메뉴별 인당소비량(소비가중평균)을 카테고리 단위로 합산해 대시보드 실적에 반영
-async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice) {
+async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, totalSales, totalCustomers) {
   const [{ data: designs }, { data: consumption }] = await Promise.all([
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     fetchAllRows('menu_consumption', q => q.eq('season_id', seasonId)),
@@ -1350,8 +1351,18 @@ async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice) {
   const { data: freshCategorySummary } = await fetchAllRows('category_summary', q => q.eq('season_id', seasonId).in('category', DASHBOARD_CATEGORIES));
   const brandActual = weightedTotals(freshCategorySummary || [], 'actual');
   const brandActualRatio = computeCostRatio(brandActual.costPerGram, brandActual.consumption, targetPrice);
+
+  // 예전 "실적 자동 반영" 버튼이 하던 객단가/매출/객수 저장도 여기서 같이 처리 (다른 탭들이 target_price_per_person에 의존함)
+  const targetPayload = {
+    target_price_per_person: targetPrice,
+    actual_total_sales: totalSales, actual_total_customers: totalCustomers,
+    actual_price_per_person: targetPrice,
+    actual_cost_ratio_brand: brandActualRatio,
+  };
   if (state.seasonTarget?.id) {
-    await sb.from('season_targets').update({ actual_cost_ratio_brand: brandActualRatio }).eq('id', state.seasonTarget.id);
+    await sb.from('season_targets').update(targetPayload).eq('id', state.seasonTarget.id);
+  } else {
+    await sb.from('season_targets').insert({ ...targetPayload, season_id: seasonId });
   }
 }
 
@@ -1359,7 +1370,7 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
   const btn = $('#computeConsumptionBtn');
   btn.disabled = true;
   try {
-    const { results, error, totalCustomers, pricePerCustomer } = await computeMenuConsumption();
+    const { results, error, totalCustomers, totalSales, pricePerCustomer } = await computeMenuConsumption();
     if (error) { flash($('#computeConsumptionMsg'), error, false); return; }
     if (!totalCustomers) { flash($('#computeConsumptionMsg'), '매출/객수 데이터가 없습니다. 매출/객수 탭에서 먼저 입력해주세요.', false); return; }
 
@@ -1374,7 +1385,7 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
       if (upErr) { flash($('#computeConsumptionMsg'), '저장 실패: ' + upErr.message, false); return; }
     }
 
-    await rebuildCategoryActualRollupFromMenus(state.currentSeasonId, pricePerCustomer);
+    await rebuildCategoryActualRollupFromMenus(state.currentSeasonId, pricePerCustomer, totalSales, totalCustomers);
 
     const exactCount = results.filter(r => r.consumption_source === 'exact').length;
     const allocatedCount = results.filter(r => r.consumption_source === 'allocated').length;
@@ -1383,6 +1394,7 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
     flash($('#computeConsumptionMsg'), `계산 완료 — 확정 ${exactCount} / 추정(신뢰) ${allocatedCount} / 추정(낮음) ${lowCount}${unresolvedCount ? ` / 미해결 ${unresolvedCount}` : ''}`);
     await loadMenuConsumptionView();
     await loadDashboard();
+    await loadTargetForm();
   } finally {
     btn.disabled = false;
   }
@@ -2008,84 +2020,6 @@ $('#bulkDeleteMarketBtn').addEventListener('click', async () => {
   $('#marketSelectAll').checked = false;
   flash($('#marketBulkMsg'), `${ids.length}개 삭제되었습니다.`);
   await loadMarketView();
-});
-
-// =====================================================================
-// Dashboard: auto-apply actuals from usage + sales data
-// =====================================================================
-$('#applyActualsBtn').addEventListener('click', async () => {
-  if (!state.currentSeasonId) return;
-  const btn = $('#applyActualsBtn');
-  btn.disabled = true;
-  try {
-    const [{ data: usage, error: usageErr }, { data: sales, error: salesErr }] = await Promise.all([
-      fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month')),
-      fetchAllRows('store_sales', q => applySeasonDateFilter(q, 'sales_date')),
-    ]);
-    if (usageErr || salesErr) { flash($('#applyActualsMsg'), '데이터 조회 실패: ' + (usageErr || salesErr).message, false); return; }
-    if (!sales?.length) { flash($('#applyActualsMsg'), '매출/객수 데이터가 없습니다. 7번 탭에서 먼저 입력해주세요.', false); return; }
-    if (!usage?.length) { flash($('#applyActualsMsg'), '자재 사용량 데이터가 없습니다. 6번 탭에서 먼저 입력해주세요.', false); return; }
-
-    const totalSales = sales.reduce((a, r) => a + (Number(r.sales_total) || 0), 0);
-    const totalCustomers = sales.reduce((a, r) => a + (Number(r.customers_total) || 0), 0);
-    const pricePerCustomer = totalCustomers ? totalSales / totalCustomers : null;
-
-    const totalUsageAmount = usage.reduce((a, r) => a + (Number(r.actual_usage_amount) || 0), 0);
-    const brandActualRatio = totalSales ? (totalUsageAmount / (totalSales / 1.1)) * 100 : null;
-
-    const byCategory = {};
-    let skippedCount = 0;
-    usage.forEach(r => {
-      const grams = (Number(r.actual_usage_qty) || 0) * (Number(r.conversion_factor) || 0);
-      const cat = normalizeCategory(r.category);
-      if (!cat || !DASHBOARD_CATEGORIES.includes(cat)) { skippedCount++; return; }
-      if (!byCategory[cat]) byCategory[cat] = { grams: 0, amount: 0 };
-      byCategory[cat].grams += grams;
-      byCategory[cat].amount += Number(r.actual_usage_amount) || 0;
-    });
-
-    // 실적 객단가를 목표객단가로 사용 (매출/객수 데이터 기준 자동산출)
-    const targetPrice = pricePerCustomer;
-    const upserts = Object.entries(byCategory).map(([category, agg]) => {
-      const costPerGram = agg.grams ? agg.amount / agg.grams : null;
-      const consumptionPerPerson = totalCustomers ? agg.grams / totalCustomers : null;
-      return {
-        season_id: state.currentSeasonId, category,
-        actual_cost_per_gram: costPerGram, actual_consumption_per_person: consumptionPerPerson,
-        actual_cost_ratio: computeCostRatio(costPerGram, consumptionPerPerson, targetPrice),
-      };
-    });
-    if (upserts.length) {
-      const { error } = await sb.from('category_summary').upsert(upserts, { onConflict: 'season_id,category' });
-      if (error) { flash($('#applyActualsMsg'), '저장 실패: ' + error.message, false); return; }
-    }
-
-    const targetPayload = {
-      target_price_per_person: pricePerCustomer,
-      actual_total_sales: totalSales, actual_total_customers: totalCustomers,
-      actual_price_per_person: pricePerCustomer, actual_total_usage_amount: totalUsageAmount,
-      actual_cost_ratio_brand: brandActualRatio,
-    };
-    let targetErr;
-    if (state.seasonTarget?.id) {
-      ({ error: targetErr } = await sb.from('season_targets').update(targetPayload).eq('id', state.seasonTarget.id));
-    } else {
-      ({ error: targetErr } = await sb.from('season_targets').insert({ ...targetPayload, season_id: state.currentSeasonId }));
-    }
-    if (targetErr) { flash($('#applyActualsMsg'), '저장 실패: ' + targetErr.message, false); return; }
-
-    $('#actualsSummary').innerHTML = `
-      <div class="a-tile"><div class="a-label">총 매출</div><div class="a-value">${fmtNum(totalSales, 0)}원</div></div>
-      <div class="a-tile"><div class="a-label">총 객수</div><div class="a-value">${fmtNum(totalCustomers, 0)}명</div></div>
-      <div class="a-tile"><div class="a-label">실적 객단가</div><div class="a-value">${pricePerCustomer != null ? fmtNum(pricePerCustomer, 0) + '원' : '-'}</div></div>
-      <div class="a-tile"><div class="a-label">브랜드 실적원가율</div><div class="a-value">${fmtPct(brandActualRatio)}</div></div>
-    `;
-    flash($('#applyActualsMsg'), `${upserts.length}개 카테고리 실적이 반영되었습니다.${skippedCount ? ` (카테고리 미확인 ${skippedCount}건 제외)` : ''}`);
-    await loadDashboard();
-    await loadTargetForm();
-  } finally {
-    btn.disabled = false;
-  }
 });
 
 // =====================================================================
