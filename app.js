@@ -1691,7 +1691,7 @@ function renderProduceChart(months, targetSeries, directSeries, purchaseSeries, 
 // =====================================================================
 const USAGE_FIELDS = ['store_code', 'store_name', 'material_code', 'material_name', 'stock_unit', 'spec', 'conversion_factor',
   'prev_stock_qty', 'prev_stock_amount', 'received_qty', 'received_amount',
-  'current_stock_qty', 'current_stock_amount', 'actual_usage_qty', 'actual_usage_amount', 'category', 'remark', 'item_name', 'tax_status'];
+  'current_stock_qty', 'current_stock_amount', 'actual_usage_qty', 'actual_usage_amount', 'remark', 'item_name', 'tax_status'];
 const USAGE_NUMERIC_FROM = 6; // conversion_factor onward through actual_usage_amount (index 14) are numeric
 const USAGE_NUMERIC_TO = 14;
 
@@ -1706,7 +1706,7 @@ function addUsageRow() {
   const tr = document.createElement('tr');
   tr.innerHTML = USAGE_FIELDS.map((f, i) => {
     const isNumeric = i >= USAGE_NUMERIC_FROM && i <= USAGE_NUMERIC_TO;
-    const listAttr = f === 'category' ? 'list="categoryList"' : f === 'tax_status' ? 'list="taxStatusList"' : '';
+    const listAttr = f === 'tax_status' ? 'list="taxStatusList"' : '';
     return `<td><input type="${isNumeric ? 'number' : 'text'}" ${isNumeric ? 'step="0.01"' : ''} data-col="${i}" ${listAttr}></td>`;
   }).join('') + `<td><button type="button" class="row-del-btn" title="삭제">×</button></td>`;
   tr.querySelector('.row-del-btn').addEventListener('click', () => tr.remove());
@@ -1728,7 +1728,6 @@ $('#saveUsageGridBtn').addEventListener('click', async () => {
     if (!values[3] && !values[2]) return; // need at least material name or code
     const rec = { season_id: state.currentSeasonId, usage_month: usageMonth };
     USAGE_FIELDS.forEach((f, i) => {
-      if (f === 'category') { rec[f] = normalizeCategory(values[i]); return; }
       rec[f] = (i >= USAGE_NUMERIC_FROM && i <= USAGE_NUMERIC_TO) ? numOrNull(values[i]) : (values[i] ? values[i].trim() : null);
     });
     rows.push(rec);
@@ -1772,7 +1771,6 @@ function renderUsageView() {
       <td>${r.usage_month ? r.usage_month.slice(0, 7) : '-'}</td>
       <td>${r.store_name ?? '-'}</td>
       <td>${r.material_name ?? '-'}</td>
-      <td>${r.category ?? '-'}</td>
       <td>${r.remark ?? '-'}</td>
       <td>${r.item_name ?? '-'}</td>
       <td>${r.tax_status ?? '-'}</td>
