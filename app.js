@@ -897,12 +897,15 @@ async function flattenRecipesForSeason(seasonId) {
 }
 
 // ---- 자재명 유사도 (브랜드/공급처가 바뀌어 자재코드가 달라진 경우를 후보로 찾기 위함) ----
-function cleanMaterialName(s) {
+// keepParenContent=false: 괄호와 그 안 내용을 통째로 제거 (브랜드가 괄호로 앞에 붙는 경우, 예: "(참고을)참기름")
+// keepParenContent=true : 괄호만 지우고 안의 글자는 남김 (핵심 단어가 괄호 안에 있는 경우, 예: "자숙스지(소스지:미국산)")
+// 둘 중 하나로만 정하면 반대 케이스에서 오탐/누락이 생겨서, 두 방식 다 계산해 더 유사한 쪽을 쓴다.
+function cleanMaterialName(s, keepParenContent) {
   let t = (s || '');
-  t = t.replace(/\([^)]*\)/g, ' ');           // 괄호 안 내용(브랜드/산지/규격 등)은 비교 대상에서 제외
+  t = keepParenContent ? t.replace(/[()\[\]{}]/g, ' ') : t.replace(/\([^)]*\)/g, ' ');
   t = t.replace(/[\d.]+\s*(kg|g|l|lt|ml|box|팩|입|개|ea)\b/gi, ' '); // 숫자+단위 규격 제거
   t = t.replace(/-[가-힣A-Za-z0-9]*TC\b/gi, ' '); // 끝에 붙는 "-공급업체TC" 코드 제거
-  return t.replace(/[\s()\[\]{}\-_,./]/g, '');
+  return t.replace(/[\s()\[\]{}\-_,./:]/g, '');
 }
 function longestCommonSubstringLength(a, b) {
   let maxLen = 0;
@@ -920,13 +923,21 @@ function longestCommonSubstringLength(a, b) {
   return maxLen;
 }
 function materialNameSimilarity(a, b) {
-  const cleanA = cleanMaterialName(a), cleanB = cleanMaterialName(b);
-  if (!cleanA || !cleanB) return 0;
-  if (cleanA === cleanB) return 1;
-  const lcsLen = longestCommonSubstringLength(cleanA, cleanB);
-  // 2글자 이하로만 겹치면 "기름/소스/육수" 같은 흔한 종류어일 뿐인 경우가 많아 제외
-  if (lcsLen < 3) return 0;
-  return lcsLen / Math.min(cleanA.length, cleanB.length);
+  if (!a || !b) return 0;
+  const variantsA = [cleanMaterialName(a, false), cleanMaterialName(a, true)];
+  const variantsB = [cleanMaterialName(b, false), cleanMaterialName(b, true)];
+  let best = 0;
+  variantsA.forEach(cleanA => {
+    variantsB.forEach(cleanB => {
+      if (!cleanA || !cleanB) return;
+      if (cleanA === cleanB) { best = Math.max(best, 1); return; }
+      const lcsLen = longestCommonSubstringLength(cleanA, cleanB);
+      // 2글자 이하로만 겹치면 "기름/소스/육수" 같은 흔한 종류어일 뿐인 경우가 많아 제외
+      if (lcsLen < 3) return;
+      best = Math.max(best, lcsLen / Math.min(cleanA.length, cleanB.length));
+    });
+  });
+  return best;
 }
 // 부분적으로만 겹치는 경우(팽이버섯 vs 백목이버섯처럼 "버섯"만 같은 경우 등) 오탐이 많아서,
 // 둘 중 짧은 이름이 긴 이름 안에 거의 통째로 들어있는 경우(완전포함)만 후보로 올린다.
@@ -1071,19 +1082,39 @@ async function computeMenuConsumption() {
   ]);
   if (usageErr || salesErr) return { error: '자재사용량/매출 데이터를 불러오지 못했습니다.' };
 
-  const actualByMaterial = new Map();
+  const ownUsageByCode = new Map();
   (usageRows || []).forEach(r => {
     if (!r.material_code) return;
     const grams = (Number(r.actual_usage_qty) || 0) * (Number(r.conversion_factor) || 0);
-    actualByMaterial.set(r.material_code, (actualByMaterial.get(r.material_code) || 0) + grams);
+    ownUsageByCode.set(r.material_code, (ownUsageByCode.get(r.material_code) || 0) + grams);
   });
 
-  // 브랜드/공급처가 바뀌어 다른 코드로 쓰인 것으로 확정된 자재는 원래 코드의 사용량에 합산
+  // 브랜드/공급처가 바뀌어 다른 코드로 쓰인 것으로 확정된 자재들을 "그룹"으로 묶는다.
+  // 쌍(pair)으로만 합치면 A-B, B-C, A-C가 각각 확정됐을 때 B의 사용량이 A와 C 양쪽에 중복으로 더해지는 문제가 있어서,
+  // union-find로 서로 연결된 코드를 하나의 그룹으로 만들고 그룹당 합계를 한 번만 계산한다.
   const { data: confirmedAliases } = await sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed');
-  (confirmedAliases || []).forEach(a => {
-    const altGrams = actualByMaterial.get(a.alt_material_code);
-    if (altGrams) actualByMaterial.set(a.primary_material_code, (actualByMaterial.get(a.primary_material_code) || 0) + altGrams);
+  const parent = new Map();
+  const find = (x) => {
+    if (!parent.has(x)) parent.set(x, x);
+    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
+    return x;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  (confirmedAliases || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
+
+  const clusterTotal = new Map(); // 그룹 대표코드 -> 그룹 내 총 실사용량
+  ownUsageByCode.forEach((grams, code) => {
+    const rep = find(code);
+    clusterTotal.set(rep, (clusterTotal.get(rep) || 0) + grams);
   });
+
+  const allCodes = new Set(ownUsageByCode.keys());
+  (confirmedAliases || []).forEach(a => { allCodes.add(a.primary_material_code); allCodes.add(a.alt_material_code); });
+  const actualByMaterial = new Map();
+  allCodes.forEach(code => actualByMaterial.set(code, clusterTotal.get(find(code)) || 0));
 
   const totalCustomers = (salesRows || []).reduce((a, r) => a + (Number(r.customers_total) || 0), 0);
   const totalSales = (salesRows || []).reduce((a, r) => a + (Number(r.sales_total) || 0), 0);
