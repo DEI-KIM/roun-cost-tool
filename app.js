@@ -65,6 +65,12 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const fmtNum = (v, digits = 1) => (v === null || v === undefined || v === '') ? '-' : Number(v).toLocaleString('ko-KR', { maximumFractionDigits: digits });
 const fmtPct = (v) => (v === null || v === undefined || v === '') ? '-' : `${Number(v).toFixed(1)}%`;
+// "물 포함(물 제외)" 형태로 한 셀에 같이 표시 (원가 계산엔 물 포함 값만 쓰고, 괄호는 참고용)
+const fmtWithExclWater = (main, exclWater, digits = 0) => {
+  if (main === null || main === undefined || main === '') return '-';
+  const exclVal = (exclWater === null || exclWater === undefined || exclWater === '') ? main : exclWater;
+  return `${fmtNum(main, digits)}(${fmtNum(exclVal, digits)})`;
+};
 
 // 원가율(%) = (g당원가 × 인당소비량) / (목표객단가 ÷ 1.1) — 부가세 제외 매출 기준
 function computeCostRatio(costPerGram, consumptionPerPerson, targetPrice) {
@@ -349,13 +355,14 @@ function renderDashboardTable() {
   const targetRatio = computeCostRatio(target.costPerGram, target.consumption, targetPrice);
   const designRatio = computeCostRatio(design.costPerGram, design.consumption, targetPrice);
   const actualRatio = t?.actual_cost_ratio_brand ?? null;
+  const actualExclWaterTotal = rows.reduce((a, r) => a + (Number(r.actual_consumption_per_person_excl_water) || 0), 0);
 
   const brandRow = `
     <tr class="row-brand">
       <td>로운 (전체)</td>
       <td>${fmtPct(targetRatio)}</td><td>${fmtPct(designRatio)}</td><td>${fmtPct(actualRatio)}</td>
       <td>${fmtNum(target.costPerGram, 1)}g</td><td>${fmtNum(design.costPerGram, 1)}g</td><td>${fmtNum(actual.costPerGram, 1)}g</td>
-      <td>${fmtNum(target.consumption, 0)}</td><td>${fmtNum(design.consumption, 0)}</td><td>${fmtNum(actual.consumption, 0)}</td>
+      <td>${fmtNum(target.consumption, 0)}</td><td>${fmtNum(design.consumption, 0)}</td><td>${fmtWithExclWater(actual.consumption, actualExclWaterTotal)}</td>
     </tr>`;
 
   const catRows = DASHBOARD_CATEGORIES.map(cat => {
@@ -374,7 +381,7 @@ function renderDashboardTable() {
         <td>${fmtNum(r.actual_cost_per_gram, 1)}${r.actual_cost_per_gram != null ? 'g' : ''}</td>
         <td><input type="number" step="1" class="target-input" data-field="target_consumption_per_person" value="${r.target_consumption_per_person ?? ''}"></td>
         <td>${fmtNum(r.design_consumption_per_person, 0)}</td>
-        <td>${fmtNum(r.actual_consumption_per_person, 0)}</td>
+        <td>${fmtWithExclWater(r.actual_consumption_per_person, r.actual_consumption_per_person_excl_water)}</td>
       </tr>`;
   }).join('');
 
@@ -839,12 +846,11 @@ function renderMenuConsumptionView() {
       <td>${m.category ?? '-'}</td>
       <td class="cell-left">${m.menu_name}</td>
       <td>${fmtNum(m.cost_per_gram, 2)}</td>
-      <td>${m.consumption_per_person != null ? fmtNum(m.consumption_per_person, 1) : '-'}</td>
-      <td>${m.consumption_per_person_excl_water != null ? fmtNum(m.consumption_per_person_excl_water, 1) : '-'}</td>
+      <td>${fmtWithExclWater(m.consumption_per_person, m.consumption_per_person_excl_water, 1)}</td>
       <td>${badge}</td>
       <td>${m.value != null ? fmtNum(m.value, 0) : '-'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--muted)">설계원가 탭에 저장된 메뉴가 없습니다.</td></tr>`;
+  }).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--muted)">설계원가 탭에 저장된 메뉴가 없습니다.</td></tr>`;
 }
 
 $('#menuConsumptionSortSelect').addEventListener('change', renderMenuConsumptionView);
@@ -1313,18 +1319,26 @@ async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice) {
     const c = consumptionByMenu[m.menu_name];
     if (!m.category || c?.consumption_per_person == null || m.cost_per_gram == null) return;
     if (!byCat[m.category]) byCat[m.category] = [];
-    byCat[m.category].push({ cost_per_gram: m.cost_per_gram, consumption_per_person: c.consumption_per_person });
+    byCat[m.category].push({
+      cost_per_gram: m.cost_per_gram, consumption_per_person: c.consumption_per_person,
+      consumption_per_person_excl_water: c.consumption_per_person_excl_water ?? c.consumption_per_person,
+    });
   });
 
   const categoriesWithData = new Set(Object.keys(byCat));
   const upserts = DASHBOARD_CATEGORIES.filter(cat => categoriesWithData.has(cat)).map(category => {
     const list = byCat[category];
-    let totalC = 0, totalCost = 0;
-    list.forEach(r => { totalC += r.consumption_per_person; totalCost += r.consumption_per_person * r.cost_per_gram; });
+    let totalC = 0, totalCost = 0, totalCExclWater = 0;
+    list.forEach(r => {
+      totalC += r.consumption_per_person;
+      totalCost += r.consumption_per_person * r.cost_per_gram;
+      totalCExclWater += r.consumption_per_person_excl_water;
+    });
     const costPerGram = totalC ? totalCost / totalC : null;
     return {
       season_id: seasonId, category,
       actual_cost_per_gram: costPerGram, actual_consumption_per_person: totalC,
+      actual_consumption_per_person_excl_water: totalCExclWater,
       actual_cost_ratio: computeCostRatio(costPerGram, totalC, targetPrice),
     };
   });
