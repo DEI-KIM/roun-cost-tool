@@ -51,7 +51,6 @@
     <button class="tab-btn" data-tab="input">설계원가</button>
     <button class="tab-btn" data-tab="bom">레시피 등록</button>
     <button class="tab-btn" data-tab="menu-consumption">메뉴별 소비액</button>
-    <button class="tab-btn" data-tab="recipes">누적 레시피</button>
     <button class="tab-btn" data-tab="produce">농산 모니터링</button>
     <button class="tab-btn" data-tab="usage">자재 사용량</button>
     <button class="tab-btn" data-tab="market">시장 데이터</button>
@@ -119,9 +118,13 @@
           <span class="hint">목표원가율·인당소비량은 대시보드에서 카테고리별로 입력하면 자동 합산됩니다.</span>
         </div>
         <div class="actuals-summary">
+          <div class="a-tile"><div class="a-label">설계 원가율</div><div class="a-value" id="designRatioDisplay">-</div></div>
+          <div class="a-tile"><div class="a-label">설계 g당원가</div><div class="a-value" id="designCostPerGramDisplay">-</div></div>
+          <div class="a-tile"><div class="a-label">설계 인당소비량</div><div class="a-value" id="designConsumptionDisplay">-</div></div>
+          <div class="a-tile"><div class="a-label">설계 인당소비액</div><div class="a-value" id="designValueDisplay">-</div></div>
           <div class="a-tile"><div class="a-label">객단가 (매출/객수 탭 기준 자동산출)</div><div class="a-value" id="targetPriceDisplay">미반영</div></div>
         </div>
-        <p class="hint">대시보드의 "이번 시즌 실적 반영"을 누르면 매출/객수 탭 데이터로 자동 계산됩니다.</p>
+        <p class="hint">"메뉴별 소비액" 탭의 "인당소비량 자동계산"을 누르면 매출/객수 탭 데이터로 자동 계산됩니다.</p>
       </div>
 
       <div class="card">
@@ -145,6 +148,27 @@
         </div>
         <div class="grid-actions">
           <button id="addMenuRowBtn" class="btn btn-ghost btn-sm" type="button">+ 행 추가</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>등록된 메뉴</h3></div>
+        <div class="filter-row">
+          <input type="search" id="recipeSearch" placeholder="메뉴명 검색">
+          <select id="recipeSeasonFilter"><option value="">전체 시즌</option></select>
+          <select id="recipeCategoryFilter"><option value="">전체 카테고리</option></select>
+        </div>
+        <div class="bulk-actions-row">
+          <button id="bulkDeleteRecipeBtn" class="btn btn-ghost btn-sm" type="button">선택 삭제</button>
+          <span id="recipeBulkMsg" class="save-msg"></span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table wide-first" id="recipeLogTable">
+            <thead>
+              <tr><th class="col-check"><input type="checkbox" id="recipeSelectAll"></th><th>시즌</th><th>카테고리</th><th>메뉴명</th><th>원가율(%)</th><th>g당원가</th><th>인당소비량</th><th class="col-check"></th></tr>
+            </thead>
+            <tbody id="recipeLogBody"></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -287,33 +311,6 @@
               </tr>
             </thead>
             <tbody id="produceTableBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- Tab 3: 누적 레시피 -->
-    <section id="tab-recipes" class="tab-panel">
-      <div class="panel-head">
-        <h2>누적 레시피</h2>
-        <p class="panel-sub">모든 시즌에 입력된 메뉴를 검색해 언제든 꺼내 볼 수 있습니다.</p>
-      </div>
-      <div class="card">
-        <div class="filter-row">
-          <input type="search" id="recipeSearch" placeholder="메뉴명 검색">
-          <select id="recipeSeasonFilter"><option value="">전체 시즌</option></select>
-          <select id="recipeCategoryFilter"><option value="">전체 카테고리</option></select>
-        </div>
-        <div class="bulk-actions-row">
-          <button id="bulkDeleteRecipeBtn" class="btn btn-ghost btn-sm" type="button">선택 삭제</button>
-          <span id="recipeBulkMsg" class="save-msg"></span>
-        </div>
-        <div class="table-scroll">
-          <table class="data-table wide-first" id="recipeLogTable">
-            <thead>
-              <tr><th class="col-check"><input type="checkbox" id="recipeSelectAll"></th><th>시즌</th><th>카테고리</th><th>메뉴명</th><th>원가율(%)</th><th>g당원가</th><th>인당소비량</th><th class="col-check"></th></tr>
-            </thead>
-            <tbody id="recipeLogBody"></tbody>
           </table>
         </div>
       </div>

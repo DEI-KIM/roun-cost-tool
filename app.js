@@ -258,8 +258,8 @@ function setupSeasonControls() {
 }
 
 async function loadAllForCurrentSeason() {
+  await loadDashboard(); // loadTargetForm이 state.categorySummary를 읽으므로 먼저 끝나야 함
   await Promise.all([
-    loadDashboard(),
     loadTargetForm(),
     loadUsageView(),
     loadSalesView(),
@@ -437,8 +437,16 @@ function renderFeedback() {
 // =====================================================================
 async function loadTargetForm() {
   const t = state.seasonTarget;
-  const el = $('#targetPriceDisplay');
-  el.textContent = t?.target_price_per_person != null ? fmtNum(t.target_price_per_person, 0) + '원' : '미반영';
+  const targetPrice = t?.target_price_per_person ?? null;
+  $('#targetPriceDisplay').textContent = targetPrice != null ? fmtNum(targetPrice, 0) + '원' : '미반영';
+
+  const design = weightedTotals(state.categorySummary, 'design');
+  const designRatio = computeCostRatio(design.costPerGram, design.consumption, targetPrice);
+  const designValue = (design.costPerGram && design.consumption) ? design.costPerGram * design.consumption : null;
+  $('#designRatioDisplay').textContent = fmtPct(designRatio);
+  $('#designCostPerGramDisplay').textContent = design.costPerGram ? fmtNum(design.costPerGram, 1) + 'g' : '-';
+  $('#designConsumptionDisplay').textContent = design.consumption ? fmtNum(design.consumption, 0) + 'g' : '-';
+  $('#designValueDisplay').textContent = designValue != null ? fmtNum(designValue, 0) + '원' : '-';
 }
 
 function numOrNull(v) { return v === '' || v === null || v === undefined ? null : Number(v); }
