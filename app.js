@@ -265,6 +265,7 @@ async function loadAllForCurrentSeason() {
   renderTargetCostTab();
   await Promise.all([
     loadTargetForm(),
+    loadTargetCostLog(),
     loadUsageView(),
     loadSalesView(),
     loadMenuConsumptionView(),
@@ -411,6 +412,8 @@ function renderDashboardTable() {
 function renderTargetCostTab() {
   const body = $('#targetCostBody');
   if (!body) return;
+  const seasonLabel = $('#targetCostSeasonLabel');
+  if (seasonLabel) seasonLabel.textContent = `시즌 목표원가 — ${currentSeason()?.name ?? '시즌 미선택'}`;
   const rows = state.categorySummary;
   const byCategory = Object.fromEntries(rows.map(r => [r.category, r]));
   const targetPrice = state.seasonTarget?.target_price_per_person ?? null;
@@ -458,6 +461,64 @@ function renderTargetCostTab() {
     });
   });
 }
+
+// 저장된 시즌별 목표원가를 전부 불러와 시즌 필터로 조회/수정할 수 있게 보여준다 ("등록된 메뉴" 목록과 같은 방식)
+let targetCostLogCache = [];
+async function loadTargetCostLog() {
+  const { data, error } = await sb.from('category_summary').select('*, seasons(name)').order('season_id', { ascending: false });
+  if (error) { console.error(error); return; }
+  targetCostLogCache = (data || []).filter(r => DASHBOARD_CATEGORIES.includes(r.category));
+
+  const seasonSel = $('#targetCostSeasonFilter');
+  const seasonNames = [...new Set(targetCostLogCache.map(r => r.seasons?.name).filter(Boolean))];
+  const prevValue = seasonSel.value;
+  seasonSel.innerHTML = '<option value="">전체 시즌</option>' + seasonNames.map(n => `<option value="${n}">${n}</option>`).join('');
+  seasonSel.value = seasonNames.includes(prevValue) ? prevValue : '';
+
+  renderTargetCostLog();
+}
+
+async function renderTargetCostLog() {
+  const seasonF = $('#targetCostSeasonFilter').value;
+  const rows = targetCostLogCache.filter(r => !seasonF || r.seasons?.name === seasonF);
+  const seasonIds = [...new Set(rows.map(r => r.season_id))];
+  await Promise.all(seasonIds.map(sid => getTargetPrice(sid)));
+
+  const body = $('#targetCostLogBody');
+  body.innerHTML = rows.map(r => {
+    const targetPrice = state.targetPriceBySeasonId[r.season_id] ?? (r.season_id === state.currentSeasonId ? state.seasonTarget?.target_price_per_person : null);
+    const ratio = computeCostRatio(r.target_cost_per_gram, r.target_consumption_per_person, targetPrice);
+    return `
+    <tr data-id="${r.id}" data-season-id="${r.season_id}" data-category="${r.category}">
+      <td>${r.seasons?.name ?? '-'}</td>
+      <td class="cell-left">${r.category}</td>
+      <td class="computed-ratio-cell">${fmtPct(ratio)}</td>
+      <td><input class="cell-input" type="number" step="0.1" data-field="target_cost_per_gram" value="${r.target_cost_per_gram ?? ''}"></td>
+      <td><input class="cell-input" type="number" step="1" data-field="target_consumption_per_person" value="${r.target_consumption_per_person ?? ''}"></td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="5" style="text-align:center;color:var(--muted)">데이터가 없습니다.</td></tr>`;
+
+  $$('input.cell-input', body).forEach(inp => {
+    inp.addEventListener('change', async (e) => {
+      const tr = e.target.closest('tr');
+      const seasonId = Number(tr.dataset.seasonId);
+      const category = tr.dataset.category;
+      const field = e.target.dataset.field;
+      const value = numOrNull(e.target.value);
+      const gramInp = $('input[data-field="target_cost_per_gram"]', tr);
+      const consInp = $('input[data-field="target_consumption_per_person"]', tr);
+      const nextGram = field === 'target_cost_per_gram' ? value : numOrNull(gramInp.value);
+      const nextCons = field === 'target_consumption_per_person' ? value : numOrNull(consInp.value);
+      const newRatio = computeCostRatio(nextGram, nextCons, await getTargetPrice(seasonId));
+      const { error } = await sb.from('category_summary')
+        .upsert({ season_id: seasonId, category, [field]: value, target_cost_ratio: newRatio }, { onConflict: 'season_id,category' });
+      if (error) { alert('저장 실패: ' + error.message); return; }
+      if (seasonId === state.currentSeasonId) { await loadDashboard(); renderTargetCostTab(); }
+      await loadTargetCostLog();
+    });
+  });
+}
+$('#targetCostSeasonFilter').addEventListener('change', renderTargetCostLog);
 
 // 월별 실적 원가율 추이 (전체 시즌의 자재사용량·매출을 월 단위로 묶어 계산 — 시즌 경계와 무관하게 흐름을 보여줌)
 async function loadCostTrend() {

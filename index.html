@@ -123,7 +123,7 @@
 
       <div class="card">
         <div class="card-head">
-          <h3>시즌 목표원가</h3>
+          <h3 id="targetCostSeasonLabel">시즌 목표원가</h3>
           <span class="hint">목표 g당원가·인당소비량을 입력하면 목표 원가율은 자동 계산됩니다.</span>
         </div>
         <div class="table-scroll">
@@ -132,6 +132,21 @@
               <tr><th>조닝</th><th>목표 원가율</th><th>목표 g당원가</th><th>목표 인당소비량</th></tr>
             </thead>
             <tbody id="targetCostBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h3>저장된 시즌별 목표원가</h3></div>
+        <div class="filter-row">
+          <select id="targetCostSeasonFilter"><option value="">전체 시즌</option></select>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table editable-grid wide-first" id="targetCostLogTable">
+            <thead>
+              <tr><th>시즌</th><th>조닝</th><th>목표 원가율</th><th>목표 g당원가</th><th>목표 인당소비량</th></tr>
+            </thead>
+            <tbody id="targetCostLogBody"></tbody>
           </table>
         </div>
       </div>
