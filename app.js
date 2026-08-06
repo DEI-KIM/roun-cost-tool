@@ -1019,7 +1019,9 @@ async function loadMenuConsumptionView() {
 const CONSUMPTION_SOURCE_LABEL = {
   exact: { label: '확정값', cls: 'pill-good' },
   allocated: { label: '추정값(신뢰)', cls: 'pill-warn' },
+  partial: { label: '추정값(일부매장)', cls: 'pill-warn' },
   design_fallback: { label: '추정값(낮음)', cls: 'pill-crit' },
+  no_data: { label: '데이터없음', cls: 'pill-crit' },
 };
 
 function renderMenuConsumptionView() {
@@ -1273,98 +1275,14 @@ function ipfSolveCluster(menuNames, materialUsers, residualByMaterial, initialWe
   return { x, confidence };
 }
 
-async function computeMenuConsumption() {
-  const seasonId = state.currentSeasonId;
-  if (!seasonId) return { error: '시즌이 선택되지 않았습니다.' };
-
-  const flat = await flattenRecipesForSeason(seasonId);
-  if (!flat) return { error: '레시피 데이터를 불러오지 못했습니다.' };
-  const { flatByMenu, cookedWeightByMenu, finalMenus } = flat;
-
-  const [{ data: usageRows, error: usageErr }, { data: salesRows, error: salesErr }, { data: designRows }] = await Promise.all([
-    fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month')),
-    fetchAllRows('store_sales', q => applySeasonDateFilter(q, 'sales_date')),
-    fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
-  ]);
-  if (usageErr || salesErr) return { error: '자재사용량/매출 데이터를 불러오지 못했습니다.' };
-
-  const ownUsageByCode = new Map();
-  (usageRows || []).forEach(r => {
-    if (!r.material_code) return;
-    const grams = (Number(r.actual_usage_qty) || 0) * (Number(r.conversion_factor) || 0);
-    ownUsageByCode.set(r.material_code, (ownUsageByCode.get(r.material_code) || 0) + grams);
-  });
-
-  // 브랜드/공급처가 바뀌어 다른 코드로 쓰인 것으로 확정된 자재들을 "그룹"으로 묶는다.
-  // 쌍(pair)으로만 합치면 A-B, B-C, A-C가 각각 확정됐을 때 B의 사용량이 A와 C 양쪽에 중복으로 더해지는 문제가 있어서,
-  // union-find로 서로 연결된 코드를 하나의 그룹으로 만들고 그룹당 합계를 한 번만 계산한다.
-  const { data: confirmedAliases } = await sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed');
-  const parent = new Map();
-  const find = (x) => {
-    if (!parent.has(x)) parent.set(x, x);
-    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
-    return x;
-  };
-  const union = (a, b) => {
-    const ra = find(a), rb = find(b);
-    if (ra !== rb) parent.set(ra, rb);
-  };
-  (confirmedAliases || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
-
-  const clusterTotal = new Map(); // 그룹 대표코드 -> 그룹 내 총 실사용량
-  ownUsageByCode.forEach((grams, code) => {
-    const rep = find(code);
-    clusterTotal.set(rep, (clusterTotal.get(rep) || 0) + grams);
-  });
-
-  const allCodes = new Set(ownUsageByCode.keys());
-  (confirmedAliases || []).forEach(a => { allCodes.add(a.primary_material_code); allCodes.add(a.alt_material_code); });
-  const actualByMaterial = new Map();
-  allCodes.forEach(code => actualByMaterial.set(code, clusterTotal.get(find(code)) || 0));
-
-  const totalCustomers = (salesRows || []).reduce((a, r) => a + (Number(r.customers_total) || 0), 0);
-  const totalSales = (salesRows || []).reduce((a, r) => a + (Number(r.sales_total) || 0), 0);
-  const pricePerCustomer = totalCustomers ? totalSales / totalCustomers : null;
-
-  const designByMenu = new Map();
-  (designRows || []).forEach(d => { if (d.menu_name) designByMenu.set(d.menu_name, d); });
-
-  // 자재별로 그 자재를 쓰는 최종메뉴 목록 (전용자재 판별용).
-  // 서로 다른 자재코드라도 확정된 별칭으로 같은 그룹(find 대표코드)이면 "같은 자재"로 취급해야
-  // 마라샹궈가 쓰는 코드와 "팽이버섯" 메뉴가 쓰는 코드가 별칭으로 묶여있을 때 겹침을 놓치지 않는다.
-  const materialToMenus = new Map();
-  finalMenus.forEach(menu => {
-    (flatByMenu.get(menu) || new Map()).forEach((grams, code) => {
-      const key = find(code);
-      if (!materialToMenus.has(key)) materialToMenus.set(key, new Set());
-      materialToMenus.get(key).add(menu);
-    });
-  });
-
+// 자재 실사용 근거(actualByMaterial: 자재그룹대표코드 -> 그램)를 받아 메뉴별 "총 생산 그램"을
+// 전용자재(1단계) → 공유자재 IPF배분(2단계) 순으로 추정한다. 매장 전체 실사용량을 넣으면 브랜드 계산,
+// 특정 매장 실사용량만 넣으면 그 매장만의 계산이 되는 매장 무관 공용 함수.
+// onNoEvidence(menu): 그 자재 근거로는 도저히 추정이 안 되는 메뉴에 대한 콜백 (브랜드/매장이 서로 다르게 처리하기 위해 분리)
+function estimateGramsProduced({ flatByMenu, cookedWeightByMenu, finalMenus, find, materialToMenus, clusterGramsInMenu, designByMenu }, actualByMaterial, onNoEvidence) {
   const gramsProducedByMenu = new Map();
   const sourceByMenu = new Map();
   const confidenceByMenu = new Map();
-  const consumptionOverrideByMenu = new Map(); // 실사용 근거가 전혀 없어 설계값을 그대로 쓰는 메뉴 (단위가 인당소비량이라 grams와 다르게 취급)
-
-  // 실사용 근거가 전혀 없는 메뉴는 설계원가 탭의 인당소비량을 그대로 추정값(낮음)으로 사용
-  function fallbackToDesignOrUnresolved(menu) {
-    const d = designByMenu.get(menu);
-    if (d?.consumption_per_person > 0) {
-      consumptionOverrideByMenu.set(menu, d.consumption_per_person);
-      sourceByMenu.set(menu, 'design_fallback');
-      confidenceByMenu.set(menu, 0);
-    } else {
-      sourceByMenu.set(menu, null);
-    }
-  }
-
-  // 메뉴 하나의 레시피에서, 특정 자재그룹(별칭 클러스터 대표코드)에 해당하는 그램수를 전부 합쳐서 구한다.
-  // (한 메뉴 안에 같은 자재의 서로 다른 코드가 여러 줄로 들어있을 수도 있어서 코드 하나만 보면 안 됨)
-  function clusterGramsInMenu(menu, key) {
-    let total = 0;
-    (flatByMenu.get(menu) || new Map()).forEach((grams, code) => { if (find(code) === key) total += grams; });
-    return total;
-  }
 
   // ---- 1단계: 전용자재 메뉴 ----
   const unknownMenus = [];
@@ -1430,7 +1348,7 @@ async function computeMenuConsumption() {
       });
     });
 
-    if (!materialUsers.size) { cluster.forEach(fallbackToDesignOrUnresolved); return; }
+    if (!materialUsers.size) { cluster.forEach(onNoEvidence); return; }
 
     // 잔여 사용량 = 실제사용량 - 이미 확정된(1단계) 메뉴들이 쓴 만큼
     const residualByMaterial = new Map();
@@ -1456,18 +1374,72 @@ async function computeMenuConsumption() {
 
     const { x, confidence } = ipfSolveCluster(cluster, materialUsers, residualByMaterial, initialWeights);
     cluster.forEach(menu => {
-      // 이 메뉴가 걸쳐 있는 자재들이 전부 잔여사용량 0이면(=실사용 근거 없음) IPF가 0으로 수렴시키는 대신 설계값으로 대체
+      // 이 메뉴가 걸쳐 있는 자재들이 전부 잔여사용량 0이면(=실사용 근거 없음) IPF가 0으로 수렴시키는 대신 onNoEvidence로 위임
       const flatBOM = flatByMenu.get(menu) || new Map();
       const hasEvidence = [...new Set([...flatBOM.keys()].map(find))].some(key => materialUsers.has(key) && (residualByMaterial.get(key) || 0) > 1e-6);
-      if (!hasEvidence) { fallbackToDesignOrUnresolved(menu); return; }
+      if (!hasEvidence) { onNoEvidence(menu); return; }
       gramsProducedByMenu.set(menu, Math.max(0, x[menu] || 0));
       sourceByMenu.set(menu, confidence >= 0.6 ? 'allocated' : 'design_fallback');
       confidenceByMenu.set(menu, Math.round(confidence * 100));
     });
   });
 
-  // 물(음용수/정제수)은 원가 계산엔 그대로 포함하되(g당원가가 물 포함 기준으로 잡혀있어서),
-  // 참고용으로 "물 뺀 인당소비량"도 같은 비율로 같이 계산해서 보여준다 (원가 계산에는 안 씀).
+  return { gramsProducedByMenu, sourceByMenu, confidenceByMenu };
+}
+
+// 메뉴별 인당소비량을 "매장별로 먼저 취합한 뒤 브랜드로 합산"하는 방식으로 계산한다.
+// (예전에는 전 매장 실사용량을 하나로 합쳐서 한 번에 배분했는데, 그러면 디너/주말 메뉴가 덜 들어가는 일부
+//  매장의 편차가 브랜드 평균에 왜곡되어 반영되고, 매장별 이상값도 구분할 수 없었음)
+async function computeMenuConsumption(onProgress) {
+  const seasonId = state.currentSeasonId;
+  if (!seasonId) return { error: '시즌이 선택되지 않았습니다.' };
+
+  const flat = await flattenRecipesForSeason(seasonId);
+  if (!flat) return { error: '레시피 데이터를 불러오지 못했습니다.' };
+  const { flatByMenu, cookedWeightByMenu, finalMenus } = flat;
+
+  const [{ data: usageRows, error: usageErr }, { data: salesRows, error: salesErr }, { data: designRows }, aliasRes] = await Promise.all([
+    fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month')),
+    fetchAllRows('store_sales', q => applySeasonDateFilter(q, 'sales_date')),
+    fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
+    sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
+  ]);
+  if (usageErr || salesErr) return { error: '자재사용량/매출 데이터를 불러오지 못했습니다.' };
+  const confirmedAliases = aliasRes.data;
+
+  // ---- 매장과 무관한, 레시피에서만 나오는 구조는 한 번만 계산 ----
+  // 브랜드/공급처가 바뀌어 다른 코드로 쓰인 것으로 확정된 자재들을 "그룹"으로 묶는다 (union-find로 중복 합산 방지).
+  const parent = new Map();
+  const find = (x) => {
+    if (!parent.has(x)) parent.set(x, x);
+    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
+    return x;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  (confirmedAliases || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
+
+  const designByMenu = new Map();
+  (designRows || []).forEach(d => { if (d.menu_name) designByMenu.set(d.menu_name, d); });
+
+  // 자재별로 그 자재를 쓰는 최종메뉴 목록 (전용자재 판별용) — 레시피 구조에서만 나오므로 매장 무관.
+  const materialToMenus = new Map();
+  finalMenus.forEach(menu => {
+    (flatByMenu.get(menu) || new Map()).forEach((grams, code) => {
+      const key = find(code);
+      if (!materialToMenus.has(key)) materialToMenus.set(key, new Set());
+      materialToMenus.get(key).add(menu);
+    });
+  });
+
+  function clusterGramsInMenu(menu, key) {
+    let total = 0;
+    (flatByMenu.get(menu) || new Map()).forEach((grams, code) => { if (find(code) === key) total += grams; });
+    return total;
+  }
+
   const WATER_CODES = ['음용수', '정제수'];
   function waterRatio(menu) {
     const bom = flatByMenu.get(menu);
@@ -1477,27 +1449,114 @@ async function computeMenuConsumption() {
     return Math.min(1, waterGrams / cookedWeight);
   }
 
+  const recipeCtx = { flatByMenu, cookedWeightByMenu, finalMenus, find, materialToMenus, clusterGramsInMenu, designByMenu };
+
+  // 자재실사용 행들을 받아 별칭그룹 기준 합계(actualByMaterial)를 만든다 (브랜드 전체든 매장 하나든 동일 로직).
+  function buildActualByMaterial(rows) {
+    const ownUsageByCode = new Map();
+    rows.forEach(r => {
+      if (!r.material_code) return;
+      const grams = (Number(r.actual_usage_qty) || 0) * (Number(r.conversion_factor) || 0);
+      ownUsageByCode.set(r.material_code, (ownUsageByCode.get(r.material_code) || 0) + grams);
+    });
+    const clusterTotal = new Map();
+    ownUsageByCode.forEach((grams, code) => {
+      const rep = find(code);
+      clusterTotal.set(rep, (clusterTotal.get(rep) || 0) + grams);
+    });
+    const allCodes = new Set(ownUsageByCode.keys());
+    (confirmedAliases || []).forEach(a => { allCodes.add(a.primary_material_code); allCodes.add(a.alt_material_code); });
+    const actualByMaterial = new Map();
+    allCodes.forEach(code => actualByMaterial.set(code, clusterTotal.get(find(code)) || 0));
+    return actualByMaterial;
+  }
+
+  // ---- 매장 목록 및 매장별 실사용량/객수 ----
+  const storeMap = new Map();
+  const usageByStore = new Map();
+  (usageRows || []).forEach(r => {
+    if (!r.store_code) return;
+    storeMap.set(r.store_code, r.store_name || r.store_code);
+    if (!usageByStore.has(r.store_code)) usageByStore.set(r.store_code, []);
+    usageByStore.get(r.store_code).push(r);
+  });
+  const customersByStore = new Map();
+  (salesRows || []).forEach(r => {
+    if (!r.store_code) return;
+    storeMap.set(r.store_code, r.store_name || r.store_code);
+    customersByStore.set(r.store_code, (customersByStore.get(r.store_code) || 0) + (Number(r.customers_total) || 0));
+  });
+  const storeCodes = [...storeMap.keys()];
+
+  // ---- 매장별로 각각 1단계(전용자재)+2단계(IPF) 계산. 그 매장에 근거가 전혀 없는 메뉴는 "데이터없음"으로 남겨둔다 ----
+  // 매장 수만큼 IPF를 반복 계산하느라 시간이 걸려서, 매장 사이마다 한 틱씩 양보해 브라우저가 멈춘 것처럼 보이지 않게 하고
+  // 진행 상황을 onProgress로 알려준다.
+  const perStore = [];
+  for (let i = 0; i < storeCodes.length; i++) {
+    const storeCode = storeCodes[i];
+    if (onProgress) onProgress(i + 1, storeCodes.length, storeMap.get(storeCode));
+    await new Promise(r => setTimeout(r, 0));
+    const actualByMaterial = buildActualByMaterial(usageByStore.get(storeCode) || []);
+    const { gramsProducedByMenu, sourceByMenu, confidenceByMenu } = estimateGramsProduced(recipeCtx, actualByMaterial, () => {});
+    perStore.push({
+      store_code: storeCode, store_name: storeMap.get(storeCode),
+      customers: customersByStore.get(storeCode) || 0,
+      gramsProducedByMenu, sourceByMenu, confidenceByMenu,
+    });
+  }
+
+  // ---- 브랜드 전체(전 매장 실사용량 합)는 안전망 용도로만 계산 — 모든 매장에서 데이터없음인 메뉴에 한해 설계값 대체 ----
+  const totalCustomers = (salesRows || []).reduce((a, r) => a + (Number(r.customers_total) || 0), 0);
+  const totalSales = (salesRows || []).reduce((a, r) => a + (Number(r.sales_total) || 0), 0);
+  const pricePerCustomer = totalCustomers ? totalSales / totalCustomers : null;
+
+  const consumptionOverrideByMenu = new Map();
+  estimateGramsProduced(recipeCtx, buildActualByMaterial(usageRows || []), (menu) => {
+    const d = designByMenu.get(menu);
+    if (d?.consumption_per_person > 0) consumptionOverrideByMenu.set(menu, d.consumption_per_person);
+  });
+
+  // ---- 메뉴별로 매장 결과를 취합해 브랜드값을 만든다 (실사용 근거가 있는 매장만 분자/분모에 반영) ----
   const results = finalMenus.map(menu => {
     const wr = waterRatio(menu);
-    if (consumptionOverrideByMenu.has(menu)) {
-      const cpp = consumptionOverrideByMenu.get(menu);
+    let sumGrams = 0, sumCustomers = 0, storesWithData = 0, anyAllocated = false;
+    const perStoreOut = perStore.map(s => {
+      const grams = s.gramsProducedByMenu.get(menu);
+      const hasData = grams != null;
+      if (hasData) {
+        sumGrams += grams; sumCustomers += s.customers; storesWithData++;
+        if (s.sourceByMenu.get(menu) === 'allocated') anyAllocated = true;
+      }
+      const cpp = (hasData && s.customers > 0) ? grams / s.customers : null;
       return {
-        menu_name: menu,
+        store_code: s.store_code, store_name: s.store_name,
         consumption_per_person: cpp,
-        consumption_per_person_excl_water: cpp * (1 - wr),
-        consumption_source: sourceByMenu.get(menu) ?? null,
-        confidence: confidenceByMenu.get(menu) ?? null,
+        consumption_per_person_excl_water: cpp != null ? cpp * (1 - wr) : null,
+        consumption_source: hasData ? s.sourceByMenu.get(menu) : 'no_data',
+        confidence: hasData ? (s.confidenceByMenu.get(menu) ?? null) : null,
       };
+    });
+
+    let consumption_per_person = null, consumption_source = null, confidence = null;
+    if (storesWithData > 0 && sumCustomers > 0) {
+      consumption_per_person = sumGrams / sumCustomers;
+      consumption_source = storesWithData < storeCodes.length ? 'partial' : (anyAllocated ? 'allocated' : 'exact');
+      confidence = Math.round(100 * storesWithData / storeCodes.length);
+    } else if (consumptionOverrideByMenu.has(menu)) {
+      consumption_per_person = consumptionOverrideByMenu.get(menu);
+      consumption_source = 'design_fallback';
+      confidence = 0;
     }
-    const grams = gramsProducedByMenu.get(menu);
-    const source = sourceByMenu.get(menu) ?? null;
-    const consumption_per_person = (grams != null && totalCustomers > 0) ? grams / totalCustomers : null;
+
     return {
       menu_name: menu,
       consumption_per_person,
       consumption_per_person_excl_water: consumption_per_person != null ? consumption_per_person * (1 - wr) : null,
-      consumption_source: consumption_per_person != null ? source : null,
-      confidence: consumption_per_person != null ? (confidenceByMenu.get(menu) ?? null) : null,
+      consumption_source,
+      confidence,
+      stores_with_data: storesWithData,
+      stores_total: storeCodes.length,
+      per_store: perStoreOut,
     };
   });
 
@@ -1564,9 +1623,12 @@ async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, total
 
 $('#computeConsumptionBtn').addEventListener('click', async () => {
   const btn = $('#computeConsumptionBtn');
+  const originalLabel = btn.textContent;
   btn.disabled = true;
   try {
-    const { results, error, totalCustomers, totalSales, pricePerCustomer } = await computeMenuConsumption();
+    const { results, error, totalCustomers, totalSales, pricePerCustomer } = await computeMenuConsumption((i, total, storeName) => {
+      btn.textContent = `계산 중... (${i}/${total} ${storeName ?? ''})`;
+    });
     if (error) { flash($('#computeConsumptionMsg'), error, false); return; }
     if (!totalCustomers) { flash($('#computeConsumptionMsg'), '매출/객수 데이터가 없습니다. 매출/객수 탭에서 먼저 입력해주세요.', false); return; }
 
@@ -1581,18 +1643,32 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
       if (upErr) { flash($('#computeConsumptionMsg'), '저장 실패: ' + upErr.message, false); return; }
     }
 
+    // 매장별 상세 결과도 별도 테이블에 저장 (매장별 조회/이상값 탐지용)
+    const storeUpserts = results.flatMap(r => (r.per_store || []).map(s => ({
+      season_id: state.currentSeasonId, store_code: s.store_code, store_name: s.store_name, menu_name: r.menu_name,
+      consumption_per_person: s.consumption_per_person,
+      consumption_per_person_excl_water: s.consumption_per_person_excl_water,
+      consumption_source: s.consumption_source, confidence: s.confidence,
+    })));
+    if (storeUpserts.length) {
+      const { error: storeUpErr } = await sb.from('menu_consumption_store').upsert(storeUpserts, { onConflict: 'season_id,store_code,menu_name' });
+      if (storeUpErr) { flash($('#computeConsumptionMsg'), '매장별 저장 실패: ' + storeUpErr.message, false); return; }
+    }
+
     await rebuildCategoryActualRollupFromMenus(state.currentSeasonId, pricePerCustomer, totalSales, totalCustomers);
 
     const exactCount = results.filter(r => r.consumption_source === 'exact').length;
     const allocatedCount = results.filter(r => r.consumption_source === 'allocated').length;
+    const partialCount = results.filter(r => r.consumption_source === 'partial').length;
     const lowCount = results.filter(r => r.consumption_source === 'design_fallback').length;
     const unresolvedCount = results.filter(r => r.consumption_per_person == null).length;
-    flash($('#computeConsumptionMsg'), `계산 완료 — 확정 ${exactCount} / 추정(신뢰) ${allocatedCount} / 추정(낮음) ${lowCount}${unresolvedCount ? ` / 미해결 ${unresolvedCount}` : ''}`);
+    flash($('#computeConsumptionMsg'), `계산 완료 — 확정 ${exactCount} / 추정(신뢰) ${allocatedCount} / 추정(일부매장) ${partialCount} / 추정(낮음) ${lowCount}${unresolvedCount ? ` / 미해결 ${unresolvedCount}` : ''}`);
     await loadMenuConsumptionView();
     await loadDashboard();
     await loadTargetForm();
   } finally {
     btn.disabled = false;
+    btn.textContent = originalLabel;
   }
 });
 
