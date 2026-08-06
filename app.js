@@ -1003,9 +1003,12 @@ async function loadMenuConsumptionView() {
   menuConsumptionRowsCache = [...byMenu.values()].map(m => {
     const c = consumptionByMenu[m.menu_name];
     const consumptionPerPerson = c?.consumption_per_person ?? null;
-    const value = (m.cost_per_gram != null && consumptionPerPerson != null) ? m.cost_per_gram * consumptionPerPerson : null;
+    const actualCostPerGram = c?.actual_cost_per_gram ?? null;
+    const effectiveCostPerGram = actualCostPerGram ?? m.cost_per_gram;
+    const value = (effectiveCostPerGram != null && consumptionPerPerson != null) ? effectiveCostPerGram * consumptionPerPerson : null;
     return {
       menu_name: m.menu_name, category: m.category, cost_per_gram: m.cost_per_gram,
+      actual_cost_per_gram: actualCostPerGram, cost_source: c?.cost_source ?? null, cost_month: c?.cost_month ?? null,
       consumption_per_person: consumptionPerPerson,
       consumption_per_person_excl_water: c?.consumption_per_person_excl_water ?? null,
       value, seasonName,
@@ -1024,6 +1027,12 @@ const CONSUMPTION_SOURCE_LABEL = {
   no_data: { label: '데이터없음', cls: 'pill-crit' },
 };
 
+const COST_SOURCE_LABEL = {
+  actual: { label: '실단가', cls: 'pill-good' },
+  partial: { label: '일부실단가', cls: 'pill-warn' },
+  design_fallback: { label: '레시피단가', cls: 'pill-crit' },
+};
+
 function renderMenuConsumptionView() {
   const sortMode = $('#menuConsumptionSortSelect').value;
   const rows = menuConsumptionRowsCache.slice().sort((a, b) => {
@@ -1039,17 +1048,22 @@ function renderMenuConsumptionView() {
     const badge = src
       ? `<span class="${src.cls}">${src.label}${m.confidence != null ? ` ${m.confidence}%` : ''}</span>`
       : '<span style="color:var(--muted)">-</span>';
+    const costSrc = COST_SOURCE_LABEL[m.cost_source];
+    const costBadge = costSrc
+      ? `<span class="${costSrc.cls}">${fmtNum(m.actual_cost_per_gram, 2)} <span class="hint">${costSrc.label}${m.cost_month ? ` ${m.cost_month}` : ''}</span></span>`
+      : '<span style="color:var(--muted)">-</span>';
     return `
     <tr data-menu="${m.menu_name}">
       <td>${m.seasonName}</td>
       <td>${m.category ?? '-'}</td>
       <td class="cell-left">${m.menu_name}</td>
       <td>${fmtNum(m.cost_per_gram, 2)}</td>
+      <td>${costBadge}</td>
       <td>${fmtWithExclWater(m.consumption_per_person, m.consumption_per_person_excl_water, 1)}</td>
       <td>${badge}</td>
       <td>${m.value != null ? fmtNum(m.value, 0) : '-'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--muted)">설계원가 탭에 저장된 메뉴가 없습니다.</td></tr>`;
+  }).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--muted)">설계원가 탭에 저장된 메뉴가 없습니다.</td></tr>`;
 }
 
 $('#menuConsumptionSortSelect').addEventListener('change', renderMenuConsumptionView);
@@ -1563,6 +1577,98 @@ async function computeMenuConsumption(onProgress) {
   return { results, totalCustomers, totalSales, pricePerCustomer };
 }
 
+// 메뉴별 "실제 g당원가"를 계산한다. 레시피 등록 시점에 넣어둔 자재단가(material_price)는 최초 1회성 값이라
+// 지금 실제로 쓰이는 단가와 다를 수 있어서, 시즌 내 자재사용량 데이터가 있는 가장 최근 달의 브랜드 전체
+// 가중평균 단가(실사용금액 ÷ 실사용량)로 다시 계산한다. 그 달에 실사용 근거가 없는 자재는 레시피 등록
+// 단가로 대체하되, 대체 비중이 너무 크면(전체 그램의 5% 초과) 신뢰할 수 없다고 보고 비워둔다.
+async function computeActualCostPerGram(seasonId) {
+  const flat = await flattenRecipesForSeason(seasonId);
+  if (!flat) return { error: '레시피 데이터를 불러오지 못했습니다.' };
+  const { flatByMenu, cookedWeightByMenu, finalMenus } = flat;
+
+  const { data: monthRows } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month'), 'usage_month');
+  const months = [...new Set((monthRows || []).map(r => r.usage_month).filter(Boolean))].sort();
+  const latestMonth = months[months.length - 1];
+  if (!latestMonth) return { error: '자재사용량 데이터가 없습니다.' };
+
+  const [{ data: usageRows }, { data: recipeRows }, aliasRes] = await Promise.all([
+    fetchAllRows('material_usage', q => q.eq('usage_month', latestMonth), 'material_code, actual_usage_qty, actual_usage_amount, conversion_factor'),
+    fetchAllRows('recipe_items', q => q.eq('season_id', seasonId), 'material_code, material_price'),
+    sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
+  ]);
+  const confirmedAliases = aliasRes.data;
+
+  const parent = new Map();
+  const find = (x) => {
+    if (!parent.has(x)) parent.set(x, x);
+    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
+    return x;
+  };
+  const union = (a, b) => {
+    const ra = find(a), rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  (confirmedAliases || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
+
+  // 별칭그룹(대표코드) 단위로 그 달 총 사용금액/총 그램을 모아 가중평균 g당단가를 만든다.
+  const costByCluster = new Map(), gramsByCluster = new Map();
+  (usageRows || []).forEach(r => {
+    if (!r.material_code || !r.actual_usage_qty) return;
+    const grams = Number(r.actual_usage_qty) * (Number(r.conversion_factor) || 0);
+    if (!grams) return;
+    const key = find(r.material_code);
+    gramsByCluster.set(key, (gramsByCluster.get(key) || 0) + grams);
+    costByCluster.set(key, (costByCluster.get(key) || 0) + (Number(r.actual_usage_amount) || 0));
+  });
+  const realPricePerGram = new Map(); // 대표코드 -> 원/g (그 달 브랜드 전체 가중평균)
+  gramsByCluster.forEach((grams, key) => { if (grams > 0) realPricePerGram.set(key, costByCluster.get(key) / grams); });
+
+  // 레시피 등록 단가(원/kg 기준으로 입력돼있어 1000으로 나눠 원/g로 맞춤)는 실단가 없는 자재의 대체값으로만 사용.
+  const fallbackPriceByCode = new Map();
+  (recipeRows || []).forEach(r => {
+    if (r.material_code && r.material_price != null && !fallbackPriceByCode.has(r.material_code)) {
+      fallbackPriceByCode.set(r.material_code, Number(r.material_price) / 1000);
+    }
+  });
+
+  function priceForCode(code) {
+    const real = realPricePerGram.get(find(code));
+    if (real != null) return { price: real, isReal: true };
+    const fb = fallbackPriceByCode.get(code);
+    if (fb != null) return { price: fb, isReal: false };
+    return null;
+  }
+
+  const results = finalMenus.map(menu => {
+    const bom = flatByMenu.get(menu);
+    const cookedWeight = cookedWeightByMenu.get(menu);
+    if (!bom?.size || !cookedWeight) return { menu_name: menu, actual_cost_per_gram: null, cost_source: null };
+
+    let totalCost = 0, totalGrams = 0, pricedGrams = 0, realGrams = 0;
+    bom.forEach((grams, code) => {
+      totalGrams += grams;
+      const p = priceForCode(code);
+      if (!p) return;
+      totalCost += grams * p.price;
+      pricedGrams += grams;
+      if (p.isReal) realGrams += grams;
+    });
+
+    // 가격을 못 찾은 자재의 비중이 5%를 넘으면 원가가 실제보다 낮게 잡힐 위험이 커서 결과를 비워둔다.
+    if (totalGrams <= 0 || pricedGrams / totalGrams < 0.95) {
+      return { menu_name: menu, actual_cost_per_gram: null, cost_source: null };
+    }
+    const realRatio = pricedGrams > 0 ? realGrams / pricedGrams : 0;
+    return {
+      menu_name: menu,
+      actual_cost_per_gram: totalCost / cookedWeight,
+      cost_source: realRatio >= 0.999 ? 'actual' : (realRatio > 0 ? 'partial' : 'design_fallback'),
+    };
+  });
+
+  return { results, costMonth: latestMonth };
+}
+
 // 메뉴별 인당소비량(소비가중평균)을 카테고리 단위로 합산해 대시보드 실적에 반영
 async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, totalSales, totalCustomers) {
   const [{ data: designs }, { data: consumption }] = await Promise.all([
@@ -1573,10 +1679,12 @@ async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, total
   const byCat = {};
   (designs || []).forEach(m => {
     const c = consumptionByMenu[m.menu_name];
-    if (!m.category || c?.consumption_per_person == null || m.cost_per_gram == null) return;
+    // 실제 자재사용량 기준으로 재계산한 g당원가가 있으면 그걸 쓰고, 아직 계산 전인 메뉴는 설계 단가로 대체
+    const costPerGram = c?.actual_cost_per_gram ?? m.cost_per_gram;
+    if (!m.category || c?.consumption_per_person == null || costPerGram == null) return;
     if (!byCat[m.category]) byCat[m.category] = [];
     byCat[m.category].push({
-      cost_per_gram: m.cost_per_gram, consumption_per_person: c.consumption_per_person,
+      cost_per_gram: costPerGram, consumption_per_person: c.consumption_per_person,
       consumption_per_person_excl_water: c.consumption_per_person_excl_water ?? c.consumption_per_person,
     });
   });
@@ -1655,6 +1763,20 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
       if (storeUpErr) { flash($('#computeConsumptionMsg'), '매장별 저장 실패: ' + storeUpErr.message, false); return; }
     }
 
+    // 실제 자재사용량 단가 기준으로 메뉴별 g당원가도 다시 계산
+    btn.textContent = '계산 중... (실제 g당원가 계산)';
+    const costResult = await computeActualCostPerGram(state.currentSeasonId);
+    if (!costResult.error && costResult.results?.length) {
+      const costUpserts = costResult.results.filter(r => r.actual_cost_per_gram != null).map(r => ({
+        season_id: state.currentSeasonId, menu_name: r.menu_name,
+        actual_cost_per_gram: r.actual_cost_per_gram, cost_source: r.cost_source, cost_month: costResult.costMonth,
+      }));
+      if (costUpserts.length) {
+        const { error: costUpErr } = await sb.from('menu_consumption').upsert(costUpserts, { onConflict: 'season_id,menu_name' });
+        if (costUpErr) { flash($('#computeConsumptionMsg'), 'g당원가 저장 실패: ' + costUpErr.message, false); return; }
+      }
+    }
+
     await rebuildCategoryActualRollupFromMenus(state.currentSeasonId, pricePerCustomer, totalSales, totalCustomers);
 
     const exactCount = results.filter(r => r.consumption_source === 'exact').length;
@@ -1662,7 +1784,9 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
     const partialCount = results.filter(r => r.consumption_source === 'partial').length;
     const lowCount = results.filter(r => r.consumption_source === 'design_fallback').length;
     const unresolvedCount = results.filter(r => r.consumption_per_person == null).length;
-    flash($('#computeConsumptionMsg'), `계산 완료 — 확정 ${exactCount} / 추정(신뢰) ${allocatedCount} / 추정(일부매장) ${partialCount} / 추정(낮음) ${lowCount}${unresolvedCount ? ` / 미해결 ${unresolvedCount}` : ''}`);
+    const costActualCount = (costResult.results || []).filter(r => r.cost_source === 'actual').length;
+    const costPartialCount = (costResult.results || []).filter(r => r.cost_source === 'partial').length;
+    flash($('#computeConsumptionMsg'), `계산 완료 — 확정 ${exactCount} / 추정(신뢰) ${allocatedCount} / 추정(일부매장) ${partialCount} / 추정(낮음) ${lowCount}${unresolvedCount ? ` / 미해결 ${unresolvedCount}` : ''} · g당원가(${costResult.costMonth ?? '-'}) 실단가 ${costActualCount} / 일부실단가 ${costPartialCount}`);
     await loadMenuConsumptionView();
     await loadDashboard();
     await loadTargetForm();
