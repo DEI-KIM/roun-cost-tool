@@ -1644,25 +1644,25 @@ async function computeActualCostPerGram(seasonId) {
     const cookedWeight = cookedWeightByMenu.get(menu);
     if (!bom?.size || !cookedWeight) return { menu_name: menu, actual_cost_per_gram: null, cost_source: null };
 
-    let totalCost = 0, totalGrams = 0, pricedGrams = 0, realGrams = 0;
+    let totalCost = 0, totalGrams = 0, realGrams = 0;
     bom.forEach((grams, code) => {
       totalGrams += grams;
       const p = priceForCode(code);
       if (!p) return;
       totalCost += grams * p.price;
-      pricedGrams += grams;
       if (p.isReal) realGrams += grams;
     });
 
-    // 가격을 못 찾은 자재의 비중이 5%를 넘으면 원가가 실제보다 낮게 잡힐 위험이 커서 결과를 비워둔다.
-    if (totalGrams <= 0 || pricedGrams / totalGrams < 0.95) {
+    // "실단가로 확보된" 비중이 95% 미만이면(레시피 등록 단가로 대체된 부분이 5%를 넘으면) 신뢰할 수 없다고 보고 비워둔다.
+    // (레시피 등록 단가는 최초 1회성 수기입력이라 검증된 적이 없어서, 대체 비중이 크면 엉뚱한 값을 그대로 실적에 반영하게 됨)
+    const realRatio = totalGrams > 0 ? realGrams / totalGrams : 0;
+    if (totalGrams <= 0 || realRatio < 0.95) {
       return { menu_name: menu, actual_cost_per_gram: null, cost_source: null };
     }
-    const realRatio = pricedGrams > 0 ? realGrams / pricedGrams : 0;
     return {
       menu_name: menu,
       actual_cost_per_gram: totalCost / cookedWeight,
-      cost_source: realRatio >= 0.999 ? 'actual' : (realRatio > 0 ? 'partial' : 'design_fallback'),
+      cost_source: realRatio >= 0.999 ? 'actual' : 'partial',
     };
   });
 
@@ -1767,7 +1767,8 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
     btn.textContent = '계산 중... (실제 g당원가 계산)';
     const costResult = await computeActualCostPerGram(state.currentSeasonId);
     if (!costResult.error && costResult.results?.length) {
-      const costUpserts = costResult.results.filter(r => r.actual_cost_per_gram != null).map(r => ({
+      // null인 결과도 그대로 올려서, 예전엔 실단가로 잡혔다가 이번엔 근거가 부족해진 메뉴의 낡은 값을 지운다.
+      const costUpserts = costResult.results.map(r => ({
         season_id: state.currentSeasonId, menu_name: r.menu_name,
         actual_cost_per_gram: r.actual_cost_per_gram, cost_source: r.cost_source, cost_month: costResult.costMonth,
       }));
