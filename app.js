@@ -1652,7 +1652,7 @@ function renderProduceChart(months, targetSeries, directSeries, purchaseSeries, 
   if (!wrap || !months.length) { if (wrap) wrap.innerHTML = `<div class="chart-empty">데이터가 없습니다.</div>`; return; }
   const seriesDefs = [
     { label: '목표단가', color: 'var(--good)', values: targetSeries },
-    { label: '로운(직송)', color: '#C9A227', values: directSeries },
+    { label: '로운(직송)', color: 'var(--chart-2)', values: directSeries },
     { label: '로운(구매)', color: 'var(--ink)', values: purchaseSeries },
     { label: '시장단가', color: 'var(--warn)', values: marketSeries },
   ];
