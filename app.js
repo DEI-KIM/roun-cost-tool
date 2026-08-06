@@ -261,7 +261,8 @@ function setupSeasonControls() {
 }
 
 async function loadAllForCurrentSeason() {
-  await loadDashboard(); // loadTargetForm이 state.categorySummary를 읽으므로 먼저 끝나야 함
+  await loadDashboard(); // loadTargetForm/renderTargetCostTab이 state.categorySummary를 읽으므로 먼저 끝나야 함
+  renderTargetCostTab();
   await Promise.all([
     loadTargetForm(),
     loadUsageView(),
@@ -298,6 +299,16 @@ async function loadDashboard() {
   renderKpiRow();
   renderDashboardTable();
   renderFeedback();
+  loadCostTrend();
+}
+
+// 실적-목표 차이(%p)를 색깔 있는 셀로 보여준다. 원가율은 낮을수록 좋으므로 실적이 목표보다 높으면(초과) 경고색.
+function deltaCell(actualRatio, targetRatio) {
+  if (actualRatio == null || targetRatio == null) return `<td class="computed-ratio">-</td>`;
+  const gap = actualRatio - targetRatio;
+  const cls = gap >= 1 ? 'pill-crit' : gap >= 0.3 ? 'pill-warn' : 'pill-good';
+  const sign = gap > 0 ? '+' : '';
+  return `<td class="${cls}">${sign}${gap.toFixed(1)}%p</td>`;
 }
 
 function weightedTotals(rows, prefix) {
@@ -365,6 +376,7 @@ function renderDashboardTable() {
     <tr class="row-brand">
       <td>로운 (전체)</td>
       <td>${fmtPct(targetRatio)}</td><td>${fmtPct(designRatio)}</td><td>${fmtPct(actualRatio)}</td>
+      ${deltaCell(actualRatio, targetRatio)}
       <td>${fmtNum(target.costPerGram, 1)}g</td><td>${fmtNum(design.costPerGram, 1)}g</td><td>${fmtNum(actual.costPerGram, 1)}g</td>
       <td>${fmtNum(target.consumption, 0)}</td><td>${fmtNum(design.consumption, 0)}</td><td>${fmtWithExclWater(actual.consumption, actualExclWaterTotal)}</td>
     </tr>`;
@@ -380,12 +392,48 @@ function renderDashboardTable() {
         <td class="computed-ratio">${fmtPct(catTargetRatio)}</td>
         <td>${fmtPct(catDesignRatio)}</td>
         <td class="computed-ratio">${fmtPct(catActualRatio)}</td>
-        <td><input type="number" step="0.1" class="target-input" data-field="target_cost_per_gram" value="${r.target_cost_per_gram ?? ''}"></td>
+        ${deltaCell(catActualRatio, catTargetRatio)}
+        <td class="computed-ratio">${fmtNum(r.target_cost_per_gram, 1)}${r.target_cost_per_gram != null ? 'g' : ''}</td>
         <td>${fmtNum(r.design_cost_per_gram, 1)}${r.design_cost_per_gram != null ? 'g' : ''}</td>
         <td>${fmtNum(r.actual_cost_per_gram, 1)}${r.actual_cost_per_gram != null ? 'g' : ''}</td>
-        <td><input type="number" step="1" class="target-input" data-field="target_consumption_per_person" value="${r.target_consumption_per_person ?? ''}"></td>
+        <td class="computed-ratio">${fmtNum(r.target_consumption_per_person, 0)}</td>
         <td>${fmtNum(r.design_consumption_per_person, 0)}</td>
         <td>${fmtWithExclWater(r.actual_consumption_per_person, r.actual_consumption_per_person_excl_water)}</td>
+      </tr>`;
+  }).join('');
+
+  body.innerHTML = brandRow + catRows;
+}
+
+// =====================================================================
+// Tab: 목표원가 (시즌·조닝별 목표 g당원가/인당소비량 입력 — 대시보드는 이 값을 읽기만 함)
+// =====================================================================
+function renderTargetCostTab() {
+  const body = $('#targetCostBody');
+  if (!body) return;
+  const rows = state.categorySummary;
+  const byCategory = Object.fromEntries(rows.map(r => [r.category, r]));
+  const targetPrice = state.seasonTarget?.target_price_per_person ?? null;
+  const target = weightedTotals(rows, 'target');
+  const brandRatio = computeCostRatio(target.costPerGram, target.consumption, targetPrice);
+
+  const brandRow = `
+    <tr class="row-brand">
+      <td>로운 (전체)</td>
+      <td>${fmtPct(brandRatio)}</td>
+      <td>${fmtNum(target.costPerGram, 1)}${target.costPerGram ? 'g' : ''}</td>
+      <td>${fmtNum(target.consumption, 0)}</td>
+    </tr>`;
+
+  const catRows = DASHBOARD_CATEGORIES.map(cat => {
+    const r = byCategory[cat] || { category: cat };
+    const ratio = computeCostRatio(r.target_cost_per_gram, r.target_consumption_per_person, targetPrice);
+    return `
+      <tr data-category="${cat}">
+        <td>${cat}</td>
+        <td class="computed-ratio">${fmtPct(ratio)}</td>
+        <td><input type="number" step="0.1" class="target-input" data-field="target_cost_per_gram" value="${r.target_cost_per_gram ?? ''}"></td>
+        <td><input type="number" step="1" class="target-input" data-field="target_consumption_per_person" value="${r.target_consumption_per_person ?? ''}"></td>
       </tr>`;
   }).join('');
 
@@ -406,8 +454,84 @@ function renderDashboardTable() {
         .upsert({ season_id: state.currentSeasonId, category, [field]: value, target_cost_ratio: newRatio }, { onConflict: 'season_id,category' });
       if (error) { alert('저장 실패: ' + error.message); return; }
       await loadDashboard();
+      renderTargetCostTab();
     });
   });
+}
+
+// 월별 실적 원가율 추이 (전체 시즌의 자재사용량·매출을 월 단위로 묶어 계산 — 시즌 경계와 무관하게 흐름을 보여줌)
+async function loadCostTrend() {
+  const [{ data: usage }, { data: sales }] = await Promise.all([
+    fetchAllRows('material_usage', null, 'usage_month, actual_usage_amount'),
+    fetchAllRows('store_sales', null, 'sales_date, sales_total'),
+  ]);
+  const costByMonth = {}, salesByMonth = {};
+  (usage || []).forEach(r => {
+    const m = (r.usage_month || '').slice(0, 7);
+    if (!m) return;
+    costByMonth[m] = (costByMonth[m] || 0) + (Number(r.actual_usage_amount) || 0);
+  });
+  (sales || []).forEach(r => {
+    const m = (r.sales_date || '').slice(0, 7);
+    if (!m) return;
+    salesByMonth[m] = (salesByMonth[m] || 0) + (Number(r.sales_total) || 0);
+  });
+  const months = [...new Set([...Object.keys(costByMonth), ...Object.keys(salesByMonth)])].sort();
+  const ratios = months.map(m => salesByMonth[m] ? (costByMonth[m] || 0) / (salesByMonth[m] / 1.1) * 100 : null);
+
+  const target = weightedTotals(state.categorySummary, 'target');
+  const targetPrice = state.seasonTarget?.target_price_per_person ?? null;
+  const targetRatio = computeCostRatio(target.costPerGram, target.consumption, targetPrice);
+
+  renderCostTrendChart(months, ratios, targetRatio);
+}
+
+function renderCostTrendChart(months, ratios, targetRatio) {
+  const wrap = $('#costTrendChartWrap');
+  if (!wrap) return;
+  const valid = ratios.filter(v => v != null);
+  if (!months.length || !valid.length) { wrap.innerHTML = `<div class="chart-empty">데이터가 없습니다.</div>`; return; }
+
+  const width = 780, height = 200, padding = { top: 14, right: 16, bottom: 22, left: 40 };
+  const plotW = width - padding.left - padding.right;
+  const plotH = height - padding.top - padding.bottom;
+  const allValues = valid.concat(targetRatio != null ? [targetRatio] : []);
+  const maxV = Math.max(...allValues) * 1.15 || 1;
+  const xFor = (i) => months.length > 1 ? padding.left + (plotW * i / (months.length - 1)) : padding.left + plotW / 2;
+  const yFor = (v) => padding.top + plotH - (plotH * v / maxV);
+
+  const gridLines = Array.from({ length: 4 }, (_, i) => {
+    const y = padding.top + plotH * i / 3;
+    return `<line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="var(--line)" stroke-width="1" />`;
+  }).join('');
+  const yLabels = Array.from({ length: 4 }, (_, i) => {
+    const v = maxV * (3 - i) / 3;
+    const y = padding.top + plotH * i / 3;
+    return `<text x="${padding.left - 6}" y="${y + 3}" font-size="10" fill="var(--muted)" text-anchor="end">${v.toFixed(0)}%</text>`;
+  }).join('');
+  const xLabels = months.map((m, i) => `<text x="${xFor(i)}" y="${height - 4}" font-size="10" fill="var(--muted)" text-anchor="middle">${m.slice(2)}</text>`).join('');
+
+  const pts = ratios.map((v, i) => v != null ? [xFor(i), yFor(v)] : null).filter(Boolean);
+  const path = buildSmoothPath(pts);
+  const lastPt = pts[pts.length - 1];
+  const lastVal = valid[valid.length - 1];
+
+  const targetLine = targetRatio != null
+    ? `<line x1="${padding.left}" y1="${yFor(targetRatio)}" x2="${width - padding.right}" y2="${yFor(targetRatio)}" stroke="var(--line-strong)" stroke-width="2" stroke-dasharray="4 3" />`
+    : '';
+
+  wrap.innerHTML = `
+    <div class="chart-legend">
+      <span><span class="dot" style="background:var(--accent)"></span>실적 원가율</span>
+      ${targetRatio != null ? `<span><span class="dot" style="background:var(--line-strong)"></span>목표 원가율</span>` : ''}
+    </div>
+    <svg viewBox="0 0 ${width} ${height}" style="width:100%;height:auto;max-width:${width}px;">
+      ${gridLines}${yLabels}${targetLine}
+      <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" />
+      ${pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3" fill="var(--accent)" />`).join('')}
+      ${lastPt ? `<text x="${lastPt[0]}" y="${lastPt[1] - 10}" font-size="12" font-weight="700" fill="var(--accent-deep)" text-anchor="end">${lastVal.toFixed(1)}%</text>` : ''}
+      ${xLabels}
+    </svg>`;
 }
 
 function renderFeedback() {

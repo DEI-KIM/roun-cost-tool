@@ -48,6 +48,7 @@
 
   <nav class="tab-nav">
     <button class="tab-btn is-active" data-tab="dashboard">대시보드</button>
+    <button class="tab-btn" data-tab="target-cost">목표원가</button>
     <button class="tab-btn" data-tab="input">설계원가</button>
     <button class="tab-btn" data-tab="bom">레시피 등록</button>
     <button class="tab-btn" data-tab="menu-consumption">메뉴별 소비액</button>
@@ -78,28 +79,59 @@
       <div class="card">
         <div class="card-head">
           <h3>조닝별 원가 비교</h3>
-          <span class="hint">목표 g당원가·인당소비량만 입력하면 원가율은 자동 계산됩니다. 실적은 "메뉴별 소비액" 탭의 "인당소비량 자동계산"으로 채워집니다.</span>
+          <span class="hint">목표값은 "목표원가" 탭에서 입력합니다. 실적은 "메뉴별 소비액" 탭의 "인당소비량 자동계산"으로 채워집니다.</span>
         </div>
         <div class="table-scroll">
           <table class="data-table" id="dashboardTable">
             <colgroup>
               <col style="width:16%">
-              <col><col><col><col><col><col><col><col><col>
+              <col><col><col><col><col><col><col><col><col><col>
             </colgroup>
             <thead>
               <tr>
                 <th rowspan="2">구분</th>
-                <th colspan="3">원가율</th>
+                <th colspan="4">원가율</th>
                 <th colspan="3">g당원가</th>
                 <th colspan="3">인당소비량</th>
               </tr>
               <tr>
-                <th>목표</th><th>설계</th><th>실적</th>
+                <th>목표</th><th>설계</th><th>실적</th><th>목표대비</th>
                 <th>목표</th><th>설계</th><th>실적</th>
                 <th>목표</th><th>설계</th><th>실적</th>
               </tr>
             </thead>
             <tbody id="dashboardBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>월별 실적 원가율 추이</h3>
+          <span class="hint">자재사용량·매출 데이터가 있는 달을 기준으로 계산됩니다.</span>
+        </div>
+        <div id="costTrendChartWrap"></div>
+      </div>
+    </section>
+
+    <!-- Tab: 목표원가 -->
+    <section id="tab-target-cost" class="tab-panel">
+      <div class="panel-head">
+        <h2>목표원가</h2>
+        <p class="panel-sub">시즌·조닝별 목표 원가를 입력합니다. 대시보드는 이 값을 그대로 가져와 비교합니다.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>시즌 목표원가</h3>
+          <span class="hint">목표 g당원가·인당소비량을 입력하면 목표 원가율은 자동 계산됩니다.</span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table editable-grid" id="targetCostTable">
+            <thead>
+              <tr><th>조닝</th><th>목표 원가율</th><th>목표 g당원가</th><th>목표 인당소비량</th></tr>
+            </thead>
+            <tbody id="targetCostBody"></tbody>
           </table>
         </div>
       </div>
