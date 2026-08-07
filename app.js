@@ -656,6 +656,7 @@ function addMenuRow() {
     <td class="cell-left computed-ratio-cell">-</td>
     <td><input type="number" step="0.01" data-col="2"></td>
     <td><input type="number" step="1" data-col="3"></td>
+    <td><input type="text" data-col="4" list="patternList"></td>
     <td><button type="button" class="row-del-btn" title="삭제">×</button></td>
   `;
   tr.querySelector('.row-del-btn').addEventListener('click', () => tr.remove());
@@ -678,11 +679,13 @@ $('#saveMenuGridBtn').addEventListener('click', async () => {
     const menu_name = tr.querySelector('input[data-col="1"]').value;
     const cost_per_gram = tr.querySelector('input[data-col="2"]').value;
     const consumption_per_person = tr.querySelector('input[data-col="3"]').value;
+    const availability_pattern = tr.querySelector('input[data-col="4"]').value;
     if (!category || !menu_name) return;
     rows.push({
       season_id: state.currentSeasonId, category: normalizeCategory(category), menu_name: menu_name.trim(),
       cost_per_gram: numOrNull(cost_per_gram), consumption_per_person: numOrNull(consumption_per_person),
       cost_ratio: computeCostRatio(numOrNull(cost_per_gram), numOrNull(consumption_per_person), targetPrice),
+      availability_pattern: availability_pattern ? availability_pattern.trim() : null,
     });
   });
   if (!rows.length) { flash($('#menuSaveMsg'), '입력된 행이 없습니다.', false); return; }
@@ -729,18 +732,18 @@ async function rebuildCategoryDesignRollup(seasonId) {
 // =====================================================================
 // Tab: 레시피 등록 (BOM) — 시즌과 무관하게 누적되는 메뉴별 자재 비율표
 // =====================================================================
-// data-col: 0=시즌(텍스트, season_id로 변환) 1=메뉴명 2=카테고리 3=조리후중량 4=자재코드 5=자재명
-//           6=환산계수 7=자재단가 8=전처리수율 9=투입중량 10=자재사용량
-const BOM_FIELDS = ['season_name', 'menu_name', 'category', 'cooked_weight', 'material_code', 'material_name',
+// data-col: 0=시즌(텍스트, season_id로 변환) 1=메뉴명 2=카테고리 3=조리후중량 4=운영패턴 5=자재코드 6=자재명
+//           7=환산계수 8=자재단가 9=전처리수율 10=투입중량 11=자재사용량
+const BOM_FIELDS = ['season_name', 'menu_name', 'category', 'cooked_weight', 'availability_pattern', 'material_code', 'material_name',
   'conversion_factor', 'material_price', 'prep_yield', 'input_weight', 'usage_amount'];
-const BOM_NUMERIC_COLS = [3, 6, 7, 8, 9, 10];
+const BOM_NUMERIC_COLS = [3, 7, 8, 9, 10, 11];
 
 const bomGridBody = $('#bomGridBody');
 function addBomRow() {
   const tr = document.createElement('tr');
   tr.innerHTML = BOM_FIELDS.map((f, i) => {
     const isNumeric = BOM_NUMERIC_COLS.includes(i);
-    const listAttr = f === 'category' ? 'list="categoryList"' : f === 'season_name' ? 'list="seasonNameList"' : '';
+    const listAttr = f === 'category' ? 'list="categoryList"' : f === 'season_name' ? 'list="seasonNameList"' : f === 'availability_pattern' ? 'list="patternList"' : '';
     return `<td><input type="${isNumeric ? 'number' : 'text'}" ${isNumeric ? 'step="0.01"' : ''} data-col="${i}" ${listAttr}></td>`;
   }).join('') + `<td><button type="button" class="row-del-btn" title="삭제">×</button></td>`;
   tr.querySelector('.row-del-btn').addEventListener('click', () => tr.remove());
@@ -757,7 +760,7 @@ $('#saveBomGridBtn').addEventListener('click', async () => {
   $$('tr', bomGridBody).forEach(tr => {
     const values = BOM_FIELDS.map((_, i) => tr.querySelector(`input[data-col="${i}"]`).value);
     // 시즌 + 메뉴명 필수, 자재는 코드 또는 이름 중 하나만 있어도 됨 (자재코드가 빈 줄은 다른 레시피를 소스로 참조하는 줄)
-    if (!values[0] || !values[1] || (!values[4] && !values[5])) return;
+    if (!values[0] || !values[1] || (!values[5] && !values[6])) return;
     const seasonName = values[0].trim();
     const season = state.seasons.find(s => s.name === seasonName);
     if (!season) { unresolvedSeasons.add(seasonName); return; }
@@ -821,6 +824,7 @@ function renderBomView() {
       <td>${r.menu_name ?? '-'}</td>
       <td>${r.category ?? '-'}</td>
       <td>${fmtNum(r.cooked_weight, 0)}</td>
+      <td>${r.availability_pattern ?? '-'}</td>
       <td>${r.material_code ?? '-'}</td>
       <td>${r.material_name ?? '-'}</td>
       <td>${fmtNum(r.conversion_factor, 1)}</td>
@@ -829,7 +833,7 @@ function renderBomView() {
       <td>${fmtNum(r.input_weight, 1)}</td>
       <td>${fmtNum(r.usage_amount, 1)}</td>
     </tr>
-  `).join('') || `<tr><td colspan="12" style="text-align:center;color:var(--muted)">등록된 레시피가 없습니다.</td></tr>`;
+  `).join('') || `<tr><td colspan="13" style="text-align:center;color:var(--muted)">등록된 레시피가 없습니다.</td></tr>`;
 }
 
 ['bomSearch', 'bomSeasonFilter'].forEach(id => {
@@ -896,9 +900,10 @@ async function renderRecipeLog() {
       <td class="computed-ratio-cell">${fmtPct(ratio)}</td>
       <td><input class="cell-input" type="number" step="0.01" data-field="cost_per_gram" value="${r.cost_per_gram ?? ''}"></td>
       <td><input class="cell-input" type="number" step="1" data-field="consumption_per_person" value="${r.consumption_per_person ?? ''}"></td>
+      <td class="cell-left"><input class="cell-input" data-field="availability_pattern" value="${r.availability_pattern ?? ''}" list="patternList"></td>
       <td class="col-check"><button type="button" class="row-del-btn" title="삭제">×</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--muted)">데이터가 없습니다.</td></tr>`;
+  }).join('') || `<tr><td colspan="9" style="text-align:center;color:var(--muted)">데이터가 없습니다.</td></tr>`;
 
   $$('input.cell-input', body).forEach(inp => {
     inp.addEventListener('change', async (e) => {
@@ -906,7 +911,7 @@ async function renderRecipeLog() {
       const id = Number(tr.dataset.id);
       const seasonId = Number(tr.dataset.seasonId);
       const field = e.target.dataset.field;
-      const isText = field === 'category' || field === 'menu_name';
+      const isText = field === 'category' || field === 'menu_name' || field === 'availability_pattern';
       const value = field === 'category' ? normalizeCategory(e.target.value) : isText ? (e.target.value.trim() || null) : numOrNull(e.target.value);
       const payload = { [field]: value };
       if (field === 'cost_per_gram' || field === 'consumption_per_person') {
@@ -1084,6 +1089,10 @@ async function flattenRecipesForSeason(seasonId) {
   const menuNameSet = new Set(byMenu.keys());
   const cookedWeightByMenu = new Map();
   byMenu.forEach((rows, name) => cookedWeightByMenu.set(name, rows[0]?.cooked_weight ?? null));
+  // 운영패턴(상시/디너·주말/주말) — 인당소비량 계산 시 분모(객수)를 이 메뉴가 실제로 팔릴 수 있었던
+  // 시간대의 객수로 좁히는 데 쓰인다. 안 정해져 있으면 상시로 간주(기존 동작과 동일).
+  const availabilityPatternByMenu = new Map();
+  byMenu.forEach((rows, name) => availabilityPatternByMenu.set(name, rows[0]?.availability_pattern || '상시'));
 
   const rawMaterialNameByCode = new Map(); // 원자재 코드 -> 레시피에 등록된 자재명 (자재 매칭 후보 탐색에 사용)
   const memo = new Map();
@@ -1115,7 +1124,7 @@ async function flattenRecipesForSeason(seasonId) {
   const finalMenus = [...menuNameSet].filter(n => !n.startsWith('#'));
   const flatByMenu = new Map();
   finalMenus.forEach(name => flatByMenu.set(name, flatten(name, new Set())));
-  return { flatByMenu, cookedWeightByMenu, finalMenus, rawMaterialNameByCode };
+  return { flatByMenu, cookedWeightByMenu, finalMenus, rawMaterialNameByCode, availabilityPatternByMenu };
 }
 
 // ---- 자재명 유사도 (브랜드/공급처가 바뀌어 자재코드가 달라진 경우를 후보로 찾기 위함) ----
@@ -1410,7 +1419,7 @@ async function computeMenuConsumption(onProgress) {
 
   const flat = await flattenRecipesForSeason(seasonId);
   if (!flat) return { error: '레시피 데이터를 불러오지 못했습니다.' };
-  const { flatByMenu, cookedWeightByMenu, finalMenus } = flat;
+  const { flatByMenu, cookedWeightByMenu, finalMenus, availabilityPatternByMenu } = flat;
 
   const [{ data: usageRows, error: usageErr }, { data: salesRows, error: salesErr }, { data: designRows }, aliasRes] = await Promise.all([
     fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month')),
@@ -1494,11 +1503,22 @@ async function computeMenuConsumption(onProgress) {
     if (!usageByStore.has(r.store_code)) usageByStore.set(r.store_code, []);
     usageByStore.get(r.store_code).push(r);
   });
-  const customersByStore = new Map();
+  // 운영패턴별 객수 — "상시"는 전체 객수, "디너/주말"은 평일 저녁객수+휴일 전체객수, "주말"은 휴일 전체객수만.
+  // is_holiday가 "휴일"이면 토/일과 공휴일을 모두 주말 취급(매출/객수 탭 입력 기준과 동일).
+  const PATTERNS = ['상시', '디너/주말', '주말'];
+  const emptyPatternBucket = () => ({ '상시': 0, '디너/주말': 0, '주말': 0 });
+  const customersByStorePattern = new Map();
   (salesRows || []).forEach(r => {
     if (!r.store_code) return;
     storeMap.set(r.store_code, r.store_name || r.store_code);
-    customersByStore.set(r.store_code, (customersByStore.get(r.store_code) || 0) + (Number(r.customers_total) || 0));
+    if (!customersByStorePattern.has(r.store_code)) customersByStorePattern.set(r.store_code, emptyPatternBucket());
+    const bucket = customersByStorePattern.get(r.store_code);
+    const total = Number(r.customers_total) || 0;
+    const dinner = Number(r.customers_dinner) || 0;
+    const isWeekend = r.is_holiday === '휴일';
+    bucket['상시'] += total;
+    bucket['주말'] += isWeekend ? total : 0;
+    bucket['디너/주말'] += isWeekend ? total : dinner;
   });
   const storeCodes = [...storeMap.keys()];
 
@@ -1514,7 +1534,7 @@ async function computeMenuConsumption(onProgress) {
     const { gramsProducedByMenu, sourceByMenu, confidenceByMenu } = estimateGramsProduced(recipeCtx, actualByMaterial, () => {});
     perStore.push({
       store_code: storeCode, store_name: storeMap.get(storeCode),
-      customers: customersByStore.get(storeCode) || 0,
+      customersByPattern: customersByStorePattern.get(storeCode) || emptyPatternBucket(),
       gramsProducedByMenu, sourceByMenu, confidenceByMenu,
     });
   }
@@ -1531,17 +1551,21 @@ async function computeMenuConsumption(onProgress) {
   });
 
   // ---- 메뉴별로 매장 결과를 취합해 브랜드값을 만든다 (실사용 근거가 있는 매장만 분자/분모에 반영) ----
+  // 분모(객수)는 메뉴의 운영패턴에 맞는 객수를 쓴다 — 자재사용량은 월 단위라 그램(분자)은 못 쪼개지만,
+  // "이 메뉴를 살 수 있었던 손님 수"로 나누면 상시가 아닌 메뉴의 인당소비량이 실제에 가깝게 잡힌다.
   const results = finalMenus.map(menu => {
     const wr = waterRatio(menu);
+    const pattern = PATTERNS.includes(availabilityPatternByMenu.get(menu)) ? availabilityPatternByMenu.get(menu) : '상시';
     let sumGrams = 0, sumCustomers = 0, storesWithData = 0, anyAllocated = false;
     const perStoreOut = perStore.map(s => {
       const grams = s.gramsProducedByMenu.get(menu);
       const hasData = grams != null;
+      const storeCustomers = s.customersByPattern[pattern] || 0;
       if (hasData) {
-        sumGrams += grams; sumCustomers += s.customers; storesWithData++;
+        sumGrams += grams; sumCustomers += storeCustomers; storesWithData++;
         if (s.sourceByMenu.get(menu) === 'allocated') anyAllocated = true;
       }
-      const cpp = (hasData && s.customers > 0) ? grams / s.customers : null;
+      const cpp = (hasData && storeCustomers > 0) ? grams / storeCustomers : null;
       return {
         store_code: s.store_code, store_name: s.store_name,
         consumption_per_person: cpp,
@@ -1568,6 +1592,7 @@ async function computeMenuConsumption(onProgress) {
       consumption_per_person_excl_water: consumption_per_person != null ? consumption_per_person * (1 - wr) : null,
       consumption_source,
       confidence,
+      availability_pattern: pattern,
       stores_with_data: storesWithData,
       stores_total: storeCodes.length,
       per_store: perStoreOut,
