@@ -1075,7 +1075,7 @@ function renderMenuConsumptionView() {
       : '<span style="color:var(--muted)">-</span>';
     const costSrc = COST_SOURCE_LABEL[m.cost_source];
     const costBadge = costSrc
-      ? `<span class="${costSrc.cls}">${fmtNum(m.actual_cost_per_gram, 2)} <span class="hint">${costSrc.label}${m.cost_month ? ` ${m.cost_month}` : ''}</span></span>`
+      ? `<span class="${costSrc.cls}">${fmtNum(m.actual_cost_per_gram, 2)}</span>${m.cost_month ? ` <span class="hint">${m.cost_month.slice(0, 7)}</span>` : ''}`
       : '<span style="color:var(--muted)">-</span>';
     return `
     <tr data-menu="${m.menu_name}">
