@@ -1109,15 +1109,15 @@ function renderMenuConsumptionView() {
 $('#menuConsumptionSortSelect').addEventListener('change', renderMenuConsumptionView);
 
 // =====================================================================
-// Tab: 메뉴 진단 (4분면 + 긴급도 + 자재별 원가 진단)
-// 4분면/긴급도는 menuConsumptionRowsCache를 그대로 재사용 — 새 DB 조회 없음.
-// 자재 진단(행 클릭 시)만 레시피/자재사용량을 따로 불러온다 (ensureMenuDiagnosisContext).
+// Tab: 메뉴 진단 (4분면 + 긴급도)
+// menuConsumptionRowsCache를 그대로 재사용 — 새 DB 조회 없음.
 // =====================================================================
+// cls는 KPI 타일(.kpi-tile.is-*)용, pillCls는 표 셀(.data-table td.pill-*)용 — 같은 색 의미를 두 군데 다른 클래스로 낸다.
 const QUADRANT_META = {
-  A: { label: 'VE·메뉴교체', hint: '고단가·고취식', cls: 'is-crit' },
-  B: { label: '유지·확대', hint: '저단가·고취식', cls: 'is-good' },
-  C: { label: '공급처·대체', hint: '고단가·저취식', cls: 'is-warn' },
-  D: { label: '퀄리티↑·취식유도', hint: '저단가·저취식', cls: '' },
+  A: { label: 'VE·메뉴교체', hint: '고단가·고취식', cls: 'is-crit', pillCls: 'pill-crit' },
+  B: { label: '유지·확대', hint: '저단가·고취식', cls: 'is-good', pillCls: 'pill-good' },
+  C: { label: '공급처·대체', hint: '고단가·저취식', cls: 'is-warn', pillCls: 'pill-warn' },
+  D: { label: '퀄리티↑·취식유도', hint: '저단가·저취식', cls: '', pillCls: '' },
 };
 const URGENCY_TIERS = ['즉시', '우선', '검토', '낮음'];
 // 이 조닝들은 대부분 자재 1개짜리 단독메뉴라 손댈 수 있는 방법이 g당단가(공급처 협상) 하나뿐이라
@@ -1206,20 +1206,20 @@ function renderMenuDiagnosisTable() {
   const body = $('#diagnosisTableBody');
   body.innerHTML = rows.map(r => {
     const meta = QUADRANT_META[r.quadrant];
-    const tierCls = r.tier === '즉시' ? 'pill-crit' : r.tier === '우선' ? 'pill-warn' : r.tier === '검토' ? '' : '';
     return `
-    <tr data-menu="${r.menu_name}">
+    <tr data-menu="${r.menu_name}" data-consumption="${r.consumption}">
       <td>${r.category ?? '-'}</td>
-      <td class="cell-left diagnosis-menu-name">${r.menu_name} <span class="hint">${tierCls ? `<span class="${tierCls}">${r.tier}</span>` : r.tier}</span></td>
+      <td class="cell-left">${r.menu_name}</td>
       <td>${fmtNum(r.costPerGram, 2)}원/g × ${fmtNum(r.consumption, 1)}g</td>
       <td>${fmtNum(r.value, 0)}</td>
-      <td>${meta.label}</td>
-      <td class="diagnosis-detail-cell hint">클릭해서 자재별 진단 보기</td>
+      <td class="${meta.pillCls}">${meta.label}</td>
+      <td><input type="number" step="0.01" class="cell-input diagnosis-target-input" placeholder="${fmtNum(r.costPerGram, 2)}"></td>
+      <td class="diagnosis-revised-value">-</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="6" style="text-align:center;color:var(--muted)">해당하는 메뉴가 없습니다.</td></tr>`;
+  }).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--muted)">해당하는 메뉴가 없습니다.</td></tr>`;
 
-  $$('.diagnosis-menu-name', body).forEach(td => {
-    td.addEventListener('click', () => toggleMenuDiagnosisRow(td.closest('tr')));
+  $$('.diagnosis-target-input', body).forEach(input => {
+    input.addEventListener('input', () => recomputeDiagnosisTargetCell(input));
   });
 }
 
@@ -1872,201 +1872,14 @@ async function computeActualCostPerGram(seasonId) {
   return { results, costMonth: latestMonth };
 }
 
-// ---- 메뉴 진단: 자재별 원가 기여도 + 조치사항 3종 (행 클릭 시 지연 계산) ----
-// 별칭 판별(MATERIAL_ALIAS_THRESHOLD=0.9)보다 느슨하게 — "동일 자재"가 아니라 "비교 가능한 다른 자재" 후보를 찾기 위함.
-// 실제 자재명으로 검증해보니 0.5는 "고소한참기름"↔"고소한김가루"처럼 흔한 수식어만 겹쳐도 걸려 노이즈가 컸고,
-// 0.6부터는 그런 오탐이 줄고 "한입목이버섯↔표고버섯" 같이 실제로 비교할 만한 후보 위주로 남았다.
-const SUBSTITUTE_SIMILARITY_THRESHOLD = 0.6;
-const TOP_MATERIAL_COST_SHARE_MIN = 0.15; // 최상위 자재의 비용비중이 이보다 작으면 한 자재 탓으로 돌리지 않음
-// "제거·대체 검토 대상"은 최상위(가장 비싼) 자재가 아니라, 비용비중은 있으면서도 메뉴 정체성엔 결정적이지 않은 자재로 뽑는다.
-// 예: 소고기 자체는 비싸도 메뉴의 정체성이라 빼거나 바꿀 수 없지만, 비중 작은 소스·부재료는 검토 여지가 있음.
-const DOMINANT_GRAMS_SHARE_MAX = 0.5; // 조리후중량의 이 이상을 차지하면 "핵심 정체성 자재"로 보고 검토 대상에서 뺀다
-const REVIEW_TARGET_MIN_COST_SHARE = 0.08; // 이보다 비용비중이 작으면 손봐도 체감 절감폭이 작아 후보에서 뺀다
-
-let menuDiagnosisCtx = null; // { seasonId, flat, pricing, broadMaterialPool } — 시즌당 1회만 계산해 캐시
-async function ensureMenuDiagnosisContext(seasonId) {
-  if (menuDiagnosisCtx?.seasonId === seasonId) return menuDiagnosisCtx;
-  const flat = await flattenRecipesForSeason(seasonId);
-  if (!flat) return null;
-  const pricing = await buildMaterialPriceResolver(seasonId);
-  if (pricing.error) return null;
-  // 대체 후보 검색 범위를 "이 시즌 레시피에 등록된 자재"(약 200여개)보다 넓혀, 브랜드가 실제 매입한 적 있는
-  // 모든 자재(전 시즌 포함, material_usage 전체)까지 포함한다. 전국 모든 자재 카탈로그는 이 시스템에 없어서
-  // 현재 확보 가능한 가장 넓은 풀을 쓴다 — 그래도 레시피 풀(약 214개)보다 약 50% 더 넓다(실측 319개).
-  const { data: usageRows } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month'), 'material_code, material_name');
-  const broadMaterialPool = new Map(flat.rawMaterialNameByCode);
-  (usageRows || []).forEach(r => { if (r.material_code && !broadMaterialPool.has(r.material_code)) broadMaterialPool.set(r.material_code, r.material_name || r.material_code); });
-  menuDiagnosisCtx = { seasonId, flat, pricing, broadMaterialPool };
-  return menuDiagnosisCtx;
-}
-
-// 비용비중은 있지만(REVIEW_TARGET_MIN_COST_SHARE 이상) 메뉴 비중은 크지 않은(DOMINANT_GRAMS_SHARE_MAX 미만) 자재 중
-// 비용비중이 가장 큰 것을 고른다 — "손대볼 만한데 핵심은 아닌" 자재.
-function pickReviewTarget(ranked) {
-  const candidates = ranked.filter(m => m.price != null && m.gramsShare < DOMINANT_GRAMS_SHARE_MAX && m.costShare >= REVIEW_TARGET_MIN_COST_SHARE);
-  candidates.sort((a, b) => b.costShare - a.costShare);
-  return candidates[0] || null;
-}
-
-// 메뉴 BOM의 자재들을 grams×단가(비용 기여도) 기준으로 내림차순 정렬한다.
-function rankMaterialsByCost(menuName, ctx) {
-  const bom = ctx.flat.flatByMenu.get(menuName) || new Map();
-  const totalGrams = [...bom.values()].reduce((a, g) => a + g, 0);
-  const priced = [...bom.entries()].map(([code, grams]) => {
-    const p = ctx.pricing.priceForCode(code);
-    const price = p?.price ?? null;
-    const cost = price != null ? grams * price : null;
-    return {
-      code, name: ctx.flat.rawMaterialNameByCode.get(code) || code, grams,
-      gramsShare: totalGrams > 0 ? grams / totalGrams : 0, price, isReal: p?.isReal ?? false, cost,
-    };
-  });
-  const totalCost = priced.reduce((a, m) => a + (m.cost || 0), 0);
-  priced.forEach(m => { m.costShare = totalCost > 0 && m.cost != null ? m.cost / totalCost : 0; });
-  priced.sort((a, b) => (b.cost ?? -1) - (a.cost ?? -1));
-  return priced;
-}
-
-// 브랜드가 매입한 적 있는 자재 풀 전체(broadMaterialPool)에서 이름이 비슷하면서 더 싼 자재를 찾는다
-// (데이터 기반 후보 — 최종판단은 사용자 몫).
-function findSubstituteCandidates(target, ctx) {
-  const candidates = [];
-  ctx.broadMaterialPool.forEach((name, code) => {
-    if (code === target.code) return;
-    if (materialNameSimilarity(target.name, name) < SUBSTITUTE_SIMILARITY_THRESHOLD) return;
-    const p = ctx.pricing.priceForCode(code);
-    if (!p || target.price == null || p.price >= target.price) return;
-    candidates.push({ code, name, price: p.price, pctCheaper: (1 - p.price / target.price) * 100 });
-  });
-  candidates.sort((a, b) => a.price - b.price);
-  return candidates.slice(0, 3);
-}
-
-// 같은 조닝의 다른 메뉴가 쓰는 자재 중 이 메뉴엔 없는 것을 저가순으로 참고 제시한다 (맛 궁합을 주장하지 않음).
-function findCheapAdditionCandidates(menuName, ctx) {
-  const category = ctx.flat.categoryByMenu.get(menuName);
-  const ownCodes = new Set((ctx.flat.flatByMenu.get(menuName) || new Map()).keys());
-  const seen = new Map(); // code -> name
-  if (category) {
-    ctx.flat.categoryByMenu.forEach((cat, otherMenu) => {
-      if (cat !== category || otherMenu === menuName) return;
-      (ctx.flat.flatByMenu.get(otherMenu) || new Map()).forEach((grams, code) => {
-        if (!ownCodes.has(code) && !seen.has(code)) seen.set(code, ctx.flat.rawMaterialNameByCode.get(code) || code);
-      });
-    });
-  }
-  const priced = [...seen.entries()]
-    .map(([code, name]) => { const p = ctx.pricing.priceForCode(code); return p ? { code, name, price: p.price } : null; })
-    .filter(Boolean);
-  priced.sort((a, b) => a.price - b.price);
-  return priced.slice(0, 3);
-}
-
-// 메뉴 하나에 대한 진단+조치사항 3종을 계산한다. 조치사항은 모두 "참고용 후보"이며 최종판단은 사용자 몫.
-// costDriver(가장 비싼 자재)는 진단 문구에만 쓰고, 실제 제거·대체 검토는 reviewTarget(비중은 작지만 비용비중이
-// 있는 자재)을 대상으로 한다 — 핵심 정체성 자재(예: 소고기 그 자체)를 "빼라"고 제안하는 건 의미가 없기 때문.
-function diagnoseMenu(menuName, ctx) {
-  const ranked = rankMaterialsByCost(menuName, ctx);
-  const costDriver = ranked.find(m => m.price != null) || null;
-  const reviewTarget = pickReviewTarget(ranked);
-
-  let diagnosisText;
-  if (!costDriver) {
-    diagnosisText = '단가 정보를 확보한 자재가 없어 진단할 수 없습니다.';
-  } else if (costDriver.costShare < TOP_MATERIAL_COST_SHARE_MIN) {
-    diagnosisText = `특정 자재보다 여러 자재가 고르게 원가에 기여합니다 (최상위: ${costDriver.name}, 비용비중 ${fmtNum(costDriver.costShare * 100, 0)}%).`;
-  } else {
-    const shareText = costDriver.costShare >= costDriver.gramsShare
-      ? `비용비중 ${fmtNum(costDriver.costShare * 100, 0)}%`
-      : `사용비중(g) ${fmtNum(costDriver.gramsShare * 100, 0)}%`;
-    diagnosisText = `${costDriver.name}가 g당 ${fmtNum(costDriver.price, 2)}원으로 이 메뉴 원가의 ${shareText}를 차지합니다.`;
-  }
-  if (reviewTarget && reviewTarget.code !== costDriver?.code) {
-    diagnosisText += ` 그중 ${reviewTarget.name}는 메뉴 비중 ${fmtNum(reviewTarget.gramsShare * 100, 0)}%로 크지 않으면서 원가비중은 ${fmtNum(reviewTarget.costShare * 100, 0)}%라 조치 검토 대상으로 적합합니다.`;
-  }
-
-  const substituteCandidates = reviewTarget ? findSubstituteCandidates(reviewTarget, ctx) : [];
-  const substituteText = substituteCandidates.length
-    ? substituteCandidates.map(c => `${c.name} (${fmtNum(c.price, 2)}원/g, 현재 대비 -${fmtNum(c.pctCheaper, 0)}%)`).join(' / ')
-    : reviewTarget ? '후보 없음 (브랜드 매입 자재 전체 기준)' : '검토 대상 자재 없음';
-
-  const removalText = !reviewTarget
-    ? '이 메뉴는 소수 자재 비중이 커서 제거·축소 검토 대상이 마땅치 않습니다.'
-    : `${reviewTarget.name} — 메뉴 비중 ${fmtNum(reviewTarget.gramsShare * 100, 0)}%로 낮아 제거·축소해도 메뉴 정체성에 미치는 영향은 제한적일 수 있음 (원가비중 ${fmtNum(reviewTarget.costShare * 100, 0)}%) — 참고 힌트이며 맛 유지 여부는 직접 확인 필요`;
-
-  const cheapAdditions = findCheapAdditionCandidates(menuName, ctx);
-  const additionText = cheapAdditions.length
-    ? cheapAdditions.map(c => `${c.name} (${fmtNum(c.price, 2)}원/g)`).join(' / ')
-    : '후보 없음';
-
-  return { costDriver, reviewTarget, ranked, diagnosisText, substituteText, removalText, additionText };
-}
-
-// 클릭한 메뉴 행 바로 아래에 자재 진단 상세를 펼친다 (다른 메뉴 클릭 시 이전 것은 접힘)
-async function toggleMenuDiagnosisRow(tr) {
-  const menuName = tr.dataset.menu;
-  const next = tr.nextElementSibling;
-  const alreadyOpen = next && next.classList.contains('diagnosis-detail-row') && next.dataset.menu === menuName;
-  const openRow = $('.diagnosis-detail-row');
-  if (openRow) openRow.remove();
-  if (alreadyOpen) return;
-
-  const detailRow = document.createElement('tr');
-  detailRow.className = 'diagnosis-detail-row';
-  detailRow.dataset.menu = menuName;
-  detailRow.innerHTML = `<td colspan="${tr.children.length}">불러오는 중...</td>`;
-  tr.after(detailRow);
-
-  const ctx = await ensureMenuDiagnosisContext(state.currentSeasonId);
-  if (!ctx) { detailRow.innerHTML = `<td colspan="${tr.children.length}">레시피/자재사용량 데이터를 불러오지 못했습니다.</td>`; return; }
-  const diag = diagnoseMenu(menuName, ctx);
-  const row = menuDiagnosisCache.diagRows.find(r => r.menu_name === menuName);
-
-  detailRow.innerHTML = `<td colspan="${tr.children.length}">
-    <p>${diag.diagnosisText}</p>
-    <div class="diagnosis-detail-grid">
-      <div class="diagnosis-action-block">
-        <h4>① 대체 후보 자재</h4>
-        <p>${diag.substituteText}</p>
-        <span class="hint">브랜드가 매입한 적 있는 자재 전체 기준으로 이름이 비슷하고 더 저렴한 후보 — 실제 대체 가능 여부는 직접 검토 필요</span>
-      </div>
-      <div class="diagnosis-action-block">
-        <h4>② 제거 검토</h4>
-        <p>${diag.removalText}</p>
-      </div>
-      <div class="diagnosis-action-block">
-        <h4>③ 저가 자재 추가 (참고용)</h4>
-        <p>${diag.additionText}</p>
-        <span class="hint">같은 조닝에서 자주 쓰이는 저가 자재 — 맛 궁합을 뜻하지 않음</span>
-      </div>
-    </div>
-    <div class="diagnosis-target-row">
-      <span class="hint">목표 g당원가</span>
-      <input type="number" step="0.01" class="cell-input diagnosis-target-input" placeholder="${row ? fmtNum(row.costPerGram, 2) : ''}">
-      <span>→ 새 인당소비액 <span class="diagnosis-savings-value" data-field="newValue">-</span>원</span>
-      <span>절감액 <span class="diagnosis-savings-value" data-field="savings">-</span>원</span>
-    </div>
-  </td>`;
-
-  if (row) {
-    const input = $('.diagnosis-target-input', detailRow);
-    input.addEventListener('input', () => recomputeDiagnosisSavings(input, row.consumption, row.value));
-  }
-}
-
-// 목표 g당원가 입력값으로 새 인당소비액/절감액을 즉시(세션 한정) 계산한다. 저장하지 않음 — 새로고침하면 초기화됨.
-function recomputeDiagnosisSavings(input, consumption, currentValue) {
-  const wrap = input.closest('.diagnosis-target-row');
+// 목표 g당원가 입력값으로 수정 객당원가를 즉시(세션 한정) 계산해 같은 행의 출력 셀에 써준다. 저장하지 않음 — 새로고침하면 초기화됨.
+function recomputeDiagnosisTargetCell(input) {
+  const tr = input.closest('tr');
+  const consumption = Number(tr.dataset.consumption);
+  const out = $('.diagnosis-revised-value', tr);
   const target = Number(input.value);
-  if (!input.value || !Number.isFinite(target) || target <= 0) {
-    $('[data-field="newValue"]', wrap).textContent = '-';
-    $('[data-field="savings"]', wrap).textContent = '-';
-    return;
-  }
-  const newValue = target * consumption;
-  const savings = currentValue - newValue;
-  $('[data-field="newValue"]', wrap).textContent = fmtNum(newValue, 0);
-  $('[data-field="savings"]', wrap).textContent = fmtNum(savings, 0);
+  if (!input.value || !Number.isFinite(target) || target <= 0) { out.textContent = '-'; return; }
+  out.textContent = fmtNum(target * consumption, 0);
 }
 
 // =====================================================================
