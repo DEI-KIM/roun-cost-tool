@@ -283,9 +283,14 @@ table { font-variant-numeric: tabular-nums; }
 .produce-chart-title { font-size: 13.5px; font-weight: 800; margin: 0 0 10px; }
 .data-table input.diagnosis-target-input { width: 90px; text-align: right; }
 .data-table td.diagnosis-revised-value { font-weight: 800; }
-#heatmapTable th, #heatmapTable td { text-align: right; white-space: nowrap; }
-#heatmapTable th:first-child, #heatmapTable td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); }
-#heatmapTable th { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+/* 열이 많아(최대 146개) width:100% 고정폭으로는 다 짜부러지므로, 내용 너비대로 늘어나게 하고
+   .table-scroll(overflow-x:auto)로 옆으로 드래그해서 보게 한다. */
+#heatmapTable { width: auto; table-layout: auto; }
+#heatmapTable th, #heatmapTable td { text-align: right; white-space: nowrap; padding: 8px 14px; }
+#heatmapTable th:first-child, #heatmapTable td:first-child {
+  text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1;
+}
+#heatmapTable tr.row-brand td:first-child { background: var(--accent-soft); }
 .editable-grid td.computed-ratio-cell { text-align: left; padding: 4px 10px; }
 .data-table th.col-check, .data-table td.col-check { width: 34px; text-align: center; }
 .data-table.wide-first th.col-check:first-child, .data-table.wide-first td.col-check:first-child { width: 34px; }

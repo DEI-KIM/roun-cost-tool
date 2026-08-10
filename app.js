@@ -1886,7 +1886,7 @@ function recomputeDiagnosisTargetCell(input) {
 // Tab: 매장별 히트맵 — menu_consumption_store를 처음으로 읽어 매장×메뉴 인당소비액을 보여준다.
 // 매장별 실단가가 없어 브랜드 전체 실제g당원가(menu_consumption)를 곱하는 근사치임을 UI에 명시한다.
 // =====================================================================
-let storeHeatmapCache = { stores: [], cellMap: new Map(), menus: [], categoryByMenuName: new Map() };
+let storeHeatmapCache = { stores: [], cellMap: new Map(), menus: [], categoryByMenuName: new Map(), brandValueByMenu: new Map() };
 
 function ensureHeatmapCategoryOptions() {
   const sel = $('#heatmapCategorySelect');
@@ -1907,10 +1907,12 @@ async function loadStoreHeatmapView() {
   // 매장별 인당소비량 × 브랜드 전체 실제g당원가(menuConsumptionRowsCache) = 매장별 인당소비액 근사치
   const costPerGramByMenu = new Map();
   const categoryByMenuName = new Map();
+  const brandValueByMenu = new Map(); // 메뉴별 소비액 탭과 동일한, 가중평균 기반 브랜드 전체 인당소비액("로운" 합계 행에 씀)
   menuConsumptionRowsCache.forEach(m => {
     const effective = m.actual_cost_per_gram ?? m.cost_per_gram;
     if (effective != null) costPerGramByMenu.set(m.menu_name, effective);
     categoryByMenuName.set(m.menu_name, m.category);
+    if (m.value != null) brandValueByMenu.set(m.menu_name, m.value);
   });
 
   const cellMap = new Map();
@@ -1923,17 +1925,25 @@ async function loadStoreHeatmapView() {
     cellMap.set(`${r.store_code}|${r.menu_name}`, value);
   });
 
-  storeHeatmapCache = { stores, cellMap, menus: [...menuSet], categoryByMenuName };
+  storeHeatmapCache = { stores, cellMap, menus: [...menuSet], categoryByMenuName, brandValueByMenu };
   renderStoreHeatmapTable();
 }
 
 // 같은 메뉴(열) 안에서 매장 간 평균 대비 상대편차로 색을 칠한다 (메뉴마다 절대 금액이 달라 절대기준은 부적절).
 function renderStoreHeatmapTable() {
-  const { stores, cellMap, menus, categoryByMenuName } = storeHeatmapCache;
+  const { stores, cellMap, menus, categoryByMenuName, brandValueByMenu } = storeHeatmapCache;
   const category = $('#heatmapCategorySelect').value;
-  const cols = menus.filter(m => categoryByMenuName.get(m) === category).sort((a, b) => a.localeCompare(b, 'ko'));
+  const cols = menus.filter(m => categoryByMenuName.get(m) === category);
 
-  $('#heatmapTableHeadRow').innerHTML = `<th>매장</th>` + cols.map(m => `<th title="${m}">${m}</th>`).join('');
+  // 총합(표시된 매장 기준)이 큰 품목이 왼쪽에 오도록 정렬
+  const colTotal = new Map();
+  cols.forEach(m => {
+    const vals = stores.map(s => cellMap.get(`${s.code}|${m}`)).filter(v => v != null);
+    colTotal.set(m, vals.reduce((a, v) => a + v, 0));
+  });
+  cols.sort((a, b) => (colTotal.get(b) || 0) - (colTotal.get(a) || 0));
+
+  $('#heatmapTableHeadRow').innerHTML = `<th>매장</th>` + cols.map(m => `<th>${m}</th>`).join('');
 
   const colMean = new Map();
   cols.forEach(m => {
@@ -1941,8 +1951,10 @@ function renderStoreHeatmapTable() {
     colMean.set(m, vals.length ? vals.reduce((a, v) => a + v, 0) / vals.length : null);
   });
 
-  const body = $('#heatmapTableBody');
-  body.innerHTML = stores.map(s => {
+  const brandRow = `<tr class="row-brand"><td>로운 (합계)</td>` +
+    cols.map(m => `<td>${brandValueByMenu.get(m) != null ? fmtNum(brandValueByMenu.get(m), 0) : '-'}</td>`).join('') + `</tr>`;
+
+  const storeRows = stores.map(s => {
     const cells = cols.map(m => {
       const v = cellMap.get(`${s.code}|${m}`);
       const mean = colMean.get(m);
@@ -1952,9 +1964,9 @@ function renderStoreHeatmapTable() {
       return `<td class="${cls}">${fmtNum(v, 0)}</td>`;
     }).join('');
     return `<tr><td>${s.name}</td>${cells}</tr>`;
-  }).join('') || `<tr><td>데이터가 없습니다.</td></tr>`;
+  }).join('');
 
-  if (!cols.length) $('#heatmapTableBody').innerHTML = `<tr><td style="color:var(--muted)">이 조닝에는 매장별 데이터가 없습니다.</td></tr>`;
+  $('#heatmapTableBody').innerHTML = cols.length ? (brandRow + storeRows) : `<tr><td style="color:var(--muted)">이 조닝에는 매장별 데이터가 없습니다.</td></tr>`;
 }
 
 $('#heatmapCategorySelect').addEventListener('change', renderStoreHeatmapTable);
