@@ -1332,20 +1332,24 @@ function estimateGramsProduced({ flatByMenu, cookedWeightByMenu, finalMenus, fin
   const confidenceByMenu = new Map();
 
   // ---- 1단계: 전용자재 메뉴 ----
+  // 전용자재가 여러 개면 레시피상 자재사용량(gramsPerBatch) 크기로 가중평균한다(=cookedWeight*ΣU/ΣgramsPerBatch).
+  // 예전엔 단순평균이라, 0.3g짜리 가니시 자재처럼 분모가 극히 작은 자재의 추정치(실사용량 계량오차에
+  // 극도로 민감)가 220g짜리 주자재 추정치와 동일한 발언권을 가져 전체가 크게 왜곡됐다
+  // (예: 도지마롤 — 데코화이트 0.3g 때문에 인당소비량이 2.7g이 아니라 38g으로 잡혔던 사례).
   const unknownMenus = [];
   finalMenus.forEach(menu => {
     const flatBOM = flatByMenu.get(menu);
     const cookedWeight = cookedWeightByMenu.get(menu);
     if (!flatBOM.size || !cookedWeight) { unknownMenus.push(menu); return; }
     const exclusiveKeys = [...new Set([...flatBOM.keys()].map(find))].filter(key => materialToMenus.get(key)?.size === 1);
-    const estimates = [];
+    let sumU = 0, sumGramsPerBatch = 0;
     exclusiveKeys.forEach(key => {
       const U = actualByMaterial.get(key);
       const gramsPerBatch = clusterGramsInMenu(menu, key);
-      if (U != null && gramsPerBatch > 0) estimates.push(U * cookedWeight / gramsPerBatch);
+      if (U != null && gramsPerBatch > 0) { sumU += U; sumGramsPerBatch += gramsPerBatch; }
     });
-    if (estimates.length) {
-      gramsProducedByMenu.set(menu, estimates.reduce((a, v) => a + v, 0) / estimates.length);
+    if (sumGramsPerBatch > 0) {
+      gramsProducedByMenu.set(menu, sumU * cookedWeight / sumGramsPerBatch);
       sourceByMenu.set(menu, 'exact');
     } else {
       unknownMenus.push(menu);
