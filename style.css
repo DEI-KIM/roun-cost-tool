@@ -291,6 +291,10 @@ table { font-variant-numeric: tabular-nums; }
   text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 1;
 }
 #heatmapTable tr.row-brand td:first-child { background: var(--accent-soft); }
+/* 숫자 색만으로는 눈에 잘 안 띄어서, 셀 배경까지 옅게 칠해 진짜 히트맵처럼 보이게 함 */
+#heatmapTable td.pill-crit { background: var(--crit-soft); }
+#heatmapTable td.pill-warn { background: var(--warn-soft); }
+#heatmapTable td.pill-good { background: var(--good-soft); }
 .editable-grid td.computed-ratio-cell { text-align: left; padding: 4px 10px; }
 .data-table th.col-check, .data-table td.col-check { width: 34px; text-align: center; }
 .data-table.wide-first th.col-check:first-child, .data-table.wide-first td.col-check:first-child { width: 34px; }
