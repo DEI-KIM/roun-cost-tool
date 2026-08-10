@@ -1114,10 +1114,10 @@ $('#menuConsumptionSortSelect').addEventListener('change', renderMenuConsumption
 // =====================================================================
 // cls는 KPI 타일(.kpi-tile.is-*)용, pillCls는 표 셀(.data-table td.pill-*)용 — 같은 색 의미를 두 군데 다른 클래스로 낸다.
 const QUADRANT_META = {
-  A: { label: 'VE·메뉴교체', hint: '고단가·고취식', cls: 'is-crit', pillCls: 'pill-crit' },
-  B: { label: '유지·확대', hint: '저단가·고취식', cls: 'is-good', pillCls: 'pill-good' },
-  C: { label: '공급처·대체', hint: '고단가·저취식', cls: 'is-warn', pillCls: 'pill-warn' },
-  D: { label: '퀄리티↑·취식유도', hint: '저단가·저취식', cls: '', pillCls: '' },
+  A: { label: '고단가·고취식', cls: 'is-crit', pillCls: 'pill-crit' },
+  B: { label: '저단가·고취식', cls: 'is-good', pillCls: 'pill-good' },
+  C: { label: '고단가·저취식', cls: 'is-warn', pillCls: 'pill-warn' },
+  D: { label: '저단가·저취식', cls: '', pillCls: '' },
 };
 const URGENCY_TIERS = ['즉시', '우선', '검토', '낮음'];
 // 이 조닝들은 대부분 자재 1개짜리 단독메뉴라 손댈 수 있는 방법이 g당단가(공급처 협상) 하나뿐이라
@@ -1184,7 +1184,7 @@ function renderMenuDiagnosisQuadrants() {
     const s = quadrantSummary[q] || { count: 0, totalValue: 0, pct: 0 };
     return `
     <div class="kpi-tile ${meta.cls}">
-      <div class="kpi-label">${meta.label} — ${meta.hint}</div>
+      <div class="kpi-label">${meta.label}</div>
       <div class="kpi-value">${s.count}개</div>
       <div class="kpi-sub">객당 ${fmtNum(s.totalValue, 0)}원 (${fmtNum(s.pct, 0)}%)</div>
     </div>`;
