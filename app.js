@@ -750,11 +750,11 @@ async function rebuildCategoryDesignRollup(seasonId) {
 // =====================================================================
 // Tab: 레시피 등록 (BOM) — 시즌과 무관하게 누적되는 메뉴별 자재 비율표
 // =====================================================================
-// data-col: 0=시즌(텍스트, season_id로 변환) 1=메뉴명 2=카테고리 3=조리후중량 4=운영패턴(저가형) 5=운영패턴(일반) 6=자재코드 7=자재명
-//           8=환산계수 9=자재단가 10=전처리수율 11=투입중량 12=자재사용량
-const BOM_FIELDS = ['season_name', 'menu_name', 'category', 'cooked_weight', 'availability_pattern_value', 'availability_pattern_regular', 'material_code', 'material_name',
-  'conversion_factor', 'material_price', 'prep_yield', 'input_weight', 'usage_amount'];
-const BOM_NUMERIC_COLS = [3, 8, 9, 10, 11, 12];
+// data-col: 0=시즌(텍스트, season_id로 변환) 1=메뉴명 2=카테고리 3=조리후중량 4=자재코드 5=자재명
+//           6=환산계수 7=자재단가 8=전처리수율 9=투입중량 10=자재사용량 11=운영패턴(저가형) 12=운영패턴(일반)
+const BOM_FIELDS = ['season_name', 'menu_name', 'category', 'cooked_weight', 'material_code', 'material_name',
+  'conversion_factor', 'material_price', 'prep_yield', 'input_weight', 'usage_amount', 'availability_pattern_value', 'availability_pattern_regular'];
+const BOM_NUMERIC_COLS = [3, 6, 7, 8, 9, 10];
 
 const bomGridBody = $('#bomGridBody');
 function addBomRow() {
@@ -778,7 +778,7 @@ $('#saveBomGridBtn').addEventListener('click', async () => {
   $$('tr', bomGridBody).forEach(tr => {
     const values = BOM_FIELDS.map((_, i) => tr.querySelector(`input[data-col="${i}"]`).value);
     // 시즌 + 메뉴명 필수, 자재는 코드 또는 이름 중 하나만 있어도 됨 (자재코드가 빈 줄은 다른 레시피를 소스로 참조하는 줄)
-    if (!values[0] || !values[1] || (!values[6] && !values[7])) return;
+    if (!values[0] || !values[1] || (!values[4] && !values[5])) return;
     const seasonName = values[0].trim();
     const season = state.seasons.find(s => s.name === seasonName);
     if (!season) { unresolvedSeasons.add(seasonName); return; }
@@ -842,8 +842,6 @@ function renderBomView() {
       <td>${r.menu_name ?? '-'}</td>
       <td>${r.category ?? '-'}</td>
       <td>${fmtNum(r.cooked_weight, 0)}</td>
-      <td>${r.availability_pattern_value ?? '-'}</td>
-      <td>${r.availability_pattern_regular ?? '-'}</td>
       <td>${r.material_code ?? '-'}</td>
       <td>${r.material_name ?? '-'}</td>
       <td>${fmtNum(r.conversion_factor, 1)}</td>
@@ -851,6 +849,8 @@ function renderBomView() {
       <td>${r.prep_yield != null ? fmtNum(r.prep_yield, 0) + '%' : '-'}</td>
       <td>${fmtNum(r.input_weight, 1)}</td>
       <td>${fmtNum(r.usage_amount, 1)}</td>
+      <td>${r.availability_pattern_value ?? '-'}</td>
+      <td>${r.availability_pattern_regular ?? '-'}</td>
     </tr>
   `).join('') || `<tr><td colspan="14" style="text-align:center;color:var(--muted)">등록된 레시피가 없습니다.</td></tr>`;
 }
