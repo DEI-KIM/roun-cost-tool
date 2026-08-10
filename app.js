@@ -1120,6 +1120,9 @@ const QUADRANT_META = {
   D: { label: '퀄리티↑·취식유도', hint: '저단가·저취식', cls: '' },
 };
 const URGENCY_TIERS = ['즉시', '우선', '검토', '낮음'];
+// 이 조닝들은 대부분 자재 1개짜리 단독메뉴라 손댈 수 있는 방법이 g당단가(공급처 협상) 하나뿐이라
+// "메뉴 진단"(자재 조합을 바꿔볼 여지가 있는 메뉴 찾기)의 대상에서 뺀다.
+const MENU_DIAGNOSIS_EXCLUDED_CATEGORIES = ['축산', '야채', '소스', '토핑', '육수'];
 
 // menuConsumptionRowsCache 행에서 원가율 계산과 동일한 "유효 g당원가"를 뽑아 4분면/긴급도용 행을 만든다.
 function computeMenuDiagnosisQuadrants(rows) {
@@ -1130,7 +1133,8 @@ function computeMenuDiagnosisQuadrants(rows) {
       consumption: m.consumption_per_person,
       value: m.value,
     }))
-    .filter(r => r.costPerGram != null && r.consumption != null && r.value != null);
+    .filter(r => r.costPerGram != null && r.consumption != null && r.value != null)
+    .filter(r => !MENU_DIAGNOSIS_EXCLUDED_CATEGORIES.includes(r.category));
 
   const medianCost = median(diagRows.map(r => r.costPerGram));
   const medianConsumption = median(diagRows.map(r => r.consumption));
@@ -1874,17 +1878,34 @@ async function computeActualCostPerGram(seasonId) {
 // 0.6부터는 그런 오탐이 줄고 "한입목이버섯↔표고버섯" 같이 실제로 비교할 만한 후보 위주로 남았다.
 const SUBSTITUTE_SIMILARITY_THRESHOLD = 0.6;
 const TOP_MATERIAL_COST_SHARE_MIN = 0.15; // 최상위 자재의 비용비중이 이보다 작으면 한 자재 탓으로 돌리지 않음
-const REMOVAL_REVIEW_GRAMS_SHARE_MAX = 0.10; // 조리후중량 대비 이보다 작으면 "제거 검토 가능" 참고 힌트
+// "제거·대체 검토 대상"은 최상위(가장 비싼) 자재가 아니라, 비용비중은 있으면서도 메뉴 정체성엔 결정적이지 않은 자재로 뽑는다.
+// 예: 소고기 자체는 비싸도 메뉴의 정체성이라 빼거나 바꿀 수 없지만, 비중 작은 소스·부재료는 검토 여지가 있음.
+const DOMINANT_GRAMS_SHARE_MAX = 0.5; // 조리후중량의 이 이상을 차지하면 "핵심 정체성 자재"로 보고 검토 대상에서 뺀다
+const REVIEW_TARGET_MIN_COST_SHARE = 0.08; // 이보다 비용비중이 작으면 손봐도 체감 절감폭이 작아 후보에서 뺀다
 
-let menuDiagnosisCtx = null; // { seasonId, flat, pricing } — 시즌당 1회만 계산해 캐시
+let menuDiagnosisCtx = null; // { seasonId, flat, pricing, broadMaterialPool } — 시즌당 1회만 계산해 캐시
 async function ensureMenuDiagnosisContext(seasonId) {
   if (menuDiagnosisCtx?.seasonId === seasonId) return menuDiagnosisCtx;
   const flat = await flattenRecipesForSeason(seasonId);
   if (!flat) return null;
   const pricing = await buildMaterialPriceResolver(seasonId);
   if (pricing.error) return null;
-  menuDiagnosisCtx = { seasonId, flat, pricing };
+  // 대체 후보 검색 범위를 "이 시즌 레시피에 등록된 자재"(약 200여개)보다 넓혀, 브랜드가 실제 매입한 적 있는
+  // 모든 자재(전 시즌 포함, material_usage 전체)까지 포함한다. 전국 모든 자재 카탈로그는 이 시스템에 없어서
+  // 현재 확보 가능한 가장 넓은 풀을 쓴다 — 그래도 레시피 풀(약 214개)보다 약 50% 더 넓다(실측 319개).
+  const { data: usageRows } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month'), 'material_code, material_name');
+  const broadMaterialPool = new Map(flat.rawMaterialNameByCode);
+  (usageRows || []).forEach(r => { if (r.material_code && !broadMaterialPool.has(r.material_code)) broadMaterialPool.set(r.material_code, r.material_name || r.material_code); });
+  menuDiagnosisCtx = { seasonId, flat, pricing, broadMaterialPool };
   return menuDiagnosisCtx;
+}
+
+// 비용비중은 있지만(REVIEW_TARGET_MIN_COST_SHARE 이상) 메뉴 비중은 크지 않은(DOMINANT_GRAMS_SHARE_MAX 미만) 자재 중
+// 비용비중이 가장 큰 것을 고른다 — "손대볼 만한데 핵심은 아닌" 자재.
+function pickReviewTarget(ranked) {
+  const candidates = ranked.filter(m => m.price != null && m.gramsShare < DOMINANT_GRAMS_SHARE_MAX && m.costShare >= REVIEW_TARGET_MIN_COST_SHARE);
+  candidates.sort((a, b) => b.costShare - a.costShare);
+  return candidates[0] || null;
 }
 
 // 메뉴 BOM의 자재들을 grams×단가(비용 기여도) 기준으로 내림차순 정렬한다.
@@ -1906,15 +1927,16 @@ function rankMaterialsByCost(menuName, ctx) {
   return priced;
 }
 
-// 이 시즌 레시피에 등록된 원자재 풀에서 이름이 비슷하면서 더 싼 자재를 찾는다 (데이터 기반 후보 — 최종판단은 사용자 몫).
-function findSubstituteCandidates(top, ctx) {
+// 브랜드가 매입한 적 있는 자재 풀 전체(broadMaterialPool)에서 이름이 비슷하면서 더 싼 자재를 찾는다
+// (데이터 기반 후보 — 최종판단은 사용자 몫).
+function findSubstituteCandidates(target, ctx) {
   const candidates = [];
-  ctx.flat.rawMaterialNameByCode.forEach((name, code) => {
-    if (code === top.code) return;
-    if (materialNameSimilarity(top.name, name) < SUBSTITUTE_SIMILARITY_THRESHOLD) return;
+  ctx.broadMaterialPool.forEach((name, code) => {
+    if (code === target.code) return;
+    if (materialNameSimilarity(target.name, name) < SUBSTITUTE_SIMILARITY_THRESHOLD) return;
     const p = ctx.pricing.priceForCode(code);
-    if (!p || top.price == null || p.price >= top.price) return;
-    candidates.push({ code, name, price: p.price, pctCheaper: (1 - p.price / top.price) * 100 });
+    if (!p || target.price == null || p.price >= target.price) return;
+    candidates.push({ code, name, price: p.price, pctCheaper: (1 - p.price / target.price) * 100 });
   });
   candidates.sort((a, b) => a.price - b.price);
   return candidates.slice(0, 3);
@@ -1941,39 +1963,43 @@ function findCheapAdditionCandidates(menuName, ctx) {
 }
 
 // 메뉴 하나에 대한 진단+조치사항 3종을 계산한다. 조치사항은 모두 "참고용 후보"이며 최종판단은 사용자 몫.
+// costDriver(가장 비싼 자재)는 진단 문구에만 쓰고, 실제 제거·대체 검토는 reviewTarget(비중은 작지만 비용비중이
+// 있는 자재)을 대상으로 한다 — 핵심 정체성 자재(예: 소고기 그 자체)를 "빼라"고 제안하는 건 의미가 없기 때문.
 function diagnoseMenu(menuName, ctx) {
   const ranked = rankMaterialsByCost(menuName, ctx);
-  const top = ranked.find(m => m.price != null) || null;
+  const costDriver = ranked.find(m => m.price != null) || null;
+  const reviewTarget = pickReviewTarget(ranked);
 
   let diagnosisText;
-  if (!top) {
+  if (!costDriver) {
     diagnosisText = '단가 정보를 확보한 자재가 없어 진단할 수 없습니다.';
-  } else if (top.costShare < TOP_MATERIAL_COST_SHARE_MIN) {
-    diagnosisText = `특정 자재보다 여러 자재가 고르게 원가에 기여합니다 (최상위: ${top.name}, 비용비중 ${fmtNum(top.costShare * 100, 0)}%).`;
+  } else if (costDriver.costShare < TOP_MATERIAL_COST_SHARE_MIN) {
+    diagnosisText = `특정 자재보다 여러 자재가 고르게 원가에 기여합니다 (최상위: ${costDriver.name}, 비용비중 ${fmtNum(costDriver.costShare * 100, 0)}%).`;
   } else {
-    const shareText = top.costShare >= top.gramsShare
-      ? `비용비중 ${fmtNum(top.costShare * 100, 0)}%`
-      : `사용비중(g) ${fmtNum(top.gramsShare * 100, 0)}%`;
-    diagnosisText = `${top.name}가 g당 ${fmtNum(top.price, 2)}원으로 이 메뉴 원가의 ${shareText}를 차지합니다.`;
+    const shareText = costDriver.costShare >= costDriver.gramsShare
+      ? `비용비중 ${fmtNum(costDriver.costShare * 100, 0)}%`
+      : `사용비중(g) ${fmtNum(costDriver.gramsShare * 100, 0)}%`;
+    diagnosisText = `${costDriver.name}가 g당 ${fmtNum(costDriver.price, 2)}원으로 이 메뉴 원가의 ${shareText}를 차지합니다.`;
+  }
+  if (reviewTarget && reviewTarget.code !== costDriver?.code) {
+    diagnosisText += ` 그중 ${reviewTarget.name}는 메뉴 비중 ${fmtNum(reviewTarget.gramsShare * 100, 0)}%로 크지 않으면서 원가비중은 ${fmtNum(reviewTarget.costShare * 100, 0)}%라 조치 검토 대상으로 적합합니다.`;
   }
 
-  const substituteCandidates = top ? findSubstituteCandidates(top, ctx) : [];
+  const substituteCandidates = reviewTarget ? findSubstituteCandidates(reviewTarget, ctx) : [];
   const substituteText = substituteCandidates.length
     ? substituteCandidates.map(c => `${c.name} (${fmtNum(c.price, 2)}원/g, 현재 대비 -${fmtNum(c.pctCheaper, 0)}%)`).join(' / ')
-    : '후보 없음';
+    : reviewTarget ? '후보 없음 (브랜드 매입 자재 전체 기준)' : '검토 대상 자재 없음';
 
-  const removalText = !top
-    ? '판단 불가'
-    : top.gramsShare < REMOVAL_REVIEW_GRAMS_SHARE_MAX
-      ? `비중이 작아 제거 검토 가능성 있음 (전체의 ${fmtNum(top.gramsShare * 100, 0)}%) — 참고 힌트이며 맛 유지 여부는 직접 확인 필요`
-      : '주재료로 보여 제거 비권장';
+  const removalText = !reviewTarget
+    ? '이 메뉴는 소수 자재 비중이 커서 제거·축소 검토 대상이 마땅치 않습니다.'
+    : `${reviewTarget.name} — 메뉴 비중 ${fmtNum(reviewTarget.gramsShare * 100, 0)}%로 낮아 제거·축소해도 메뉴 정체성에 미치는 영향은 제한적일 수 있음 (원가비중 ${fmtNum(reviewTarget.costShare * 100, 0)}%) — 참고 힌트이며 맛 유지 여부는 직접 확인 필요`;
 
   const cheapAdditions = findCheapAdditionCandidates(menuName, ctx);
   const additionText = cheapAdditions.length
     ? cheapAdditions.map(c => `${c.name} (${fmtNum(c.price, 2)}원/g)`).join(' / ')
     : '후보 없음';
 
-  return { top, ranked, diagnosisText, substituteText, removalText, additionText };
+  return { costDriver, reviewTarget, ranked, diagnosisText, substituteText, removalText, additionText };
 }
 
 // 클릭한 메뉴 행 바로 아래에 자재 진단 상세를 펼친다 (다른 메뉴 클릭 시 이전 것은 접힘)
@@ -2002,7 +2028,7 @@ async function toggleMenuDiagnosisRow(tr) {
       <div class="diagnosis-action-block">
         <h4>① 대체 후보 자재</h4>
         <p>${diag.substituteText}</p>
-        <span class="hint">이름이 비슷하고 더 저렴한 자재 후보 — 실제 대체 가능 여부는 직접 검토 필요</span>
+        <span class="hint">브랜드가 매입한 적 있는 자재 전체 기준으로 이름이 비슷하고 더 저렴한 후보 — 실제 대체 가능 여부는 직접 검토 필요</span>
       </div>
       <div class="diagnosis-action-block">
         <h4>② 제거 검토</h4>
@@ -2016,7 +2042,7 @@ async function toggleMenuDiagnosisRow(tr) {
     </div>
     <div class="diagnosis-target-row">
       <span class="hint">목표 g당원가</span>
-      <input type="number" step="0.01" class="cell-input diagnosis-target-input" placeholder="${diag.top ? fmtNum(diag.top.price, 2) : ''}">
+      <input type="number" step="0.01" class="cell-input diagnosis-target-input" placeholder="${row ? fmtNum(row.costPerGram, 2) : ''}">
       <span>→ 새 인당소비액 <span class="diagnosis-savings-value" data-field="newValue">-</span>원</span>
       <span>절감액 <span class="diagnosis-savings-value" data-field="savings">-</span>원</span>
     </div>
