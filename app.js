@@ -1742,11 +1742,12 @@ async function computeMenuConsumption(onProgress) {
       const p = type === 'value' ? patternsForMenu.value : patternsForMenu.regular;
       return PATTERNS.includes(p) ? p : '상시';
     };
-    let sumGrams = 0, sumCustomers = 0, storesWithData = 0, anyAllocated = false;
+    let sumGrams = 0, sumCustomers = 0, fullPatternCustomers = 0, storesWithData = 0, anyAllocated = false;
     const perStoreOut = perStore.map(s => {
       const grams = s.gramsProducedByMenu.get(menu);
       const hasData = grams != null;
       const storeCustomers = s.customersByPattern[patternFor(s.store_type)] || 0;
+      fullPatternCustomers += storeCustomers; // 그 매장에 이 메뉴의 실사용 데이터가 없어도, 이 메뉴를 살 수 있었던 손님 수는 항상 누적한다
       if (hasData) {
         sumGrams += grams; sumCustomers += storeCustomers; storesWithData++;
         if (s.sourceByMenu.get(menu) === 'allocated') anyAllocated = true;
@@ -1774,7 +1775,12 @@ async function computeMenuConsumption(onProgress) {
     // 카테고리/브랜드 합산 전용 값 — 메뉴마다 다른 운영패턴 손님 수로 나누면(위 consumption_per_person)
     // 서로 다른 분모를 그냥 더하는 셈이 되어 주말·디너 한정 메뉴가 있는 쪽이 과대 반영된다.
     // 합산할 때는 항상 시즌 전체 손님 수로 나눈 값을 써야 분모가 통일되어 정확히 더해진다.
-    const consumption_per_person_brand = (storesWithData > 0 && totalCustomers > 0) ? sumGrams / totalCustomers : null;
+    // consumption_per_person(그 메뉴를 실제로 판 매장들만의 인당소비율)에 "이 메뉴를 살 수 있었던 전체 손님 수"
+    // (데이터가 없는 매장 포함, fullPatternCustomers)를 곱해 브랜드 전체 그램으로 추정한 뒤 시즌 전체 손님 수로 나눈다.
+    // (grams/totalCustomers로 직접 나누면 일부 매장만 데이터가 있는 메뉴의 분자가 과소해져 값이 크게 깎인다 — 실측 버그.)
+    const consumption_per_person_brand = (consumption_per_person != null && totalCustomers > 0)
+      ? consumption_per_person * fullPatternCustomers / totalCustomers
+      : null;
 
     return {
       menu_name: menu,
