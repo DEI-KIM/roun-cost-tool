@@ -2377,9 +2377,14 @@ function renderProduceChart(months, targetSeries, directSeries, purchaseSeries, 
 // =====================================================================
 // Tab 6: Material usage (자재 사용량)
 // =====================================================================
-const USAGE_FIELDS = ['store_code', 'store_name', 'material_code', 'material_name', 'stock_unit', 'spec', 'conversion_factor',
+// 비고/품목/과세여부는 더 이상 붙여넣기 대상이 아니다 — 저장 시 자재코드(별칭 그룹) 기준으로 과거 이력에서
+// 자동으로 이어받는다 (classifyRowsWithMaterialLookup). 자재코드가 처음 나온 경우엔 비워두고
+// "미분류 자재" 목록에 노출한다 (renderUnclassifiedMaterials).
+const USAGE_GRID_FIELDS = ['store_code', 'store_name', 'material_code', 'material_name', 'stock_unit', 'spec', 'conversion_factor',
   'prev_stock_qty', 'prev_stock_amount', 'received_qty', 'received_amount',
-  'current_stock_qty', 'current_stock_amount', 'actual_usage_qty', 'actual_usage_amount', 'remark', 'item_name', 'tax_status'];
+  'current_stock_qty', 'current_stock_amount', 'actual_usage_qty', 'actual_usage_amount'];
+const USAGE_CLASSIFICATION_FIELDS = ['remark', 'item_name', 'tax_status'];
+const USAGE_FIELDS = [...USAGE_GRID_FIELDS, ...USAGE_CLASSIFICATION_FIELDS];
 const USAGE_NUMERIC_FROM = 6; // conversion_factor onward through actual_usage_amount (index 14) are numeric
 const USAGE_NUMERIC_TO = 14;
 
@@ -2392,10 +2397,9 @@ const USAGE_NUMERIC_TO = 14;
 const usageGridBody = $('#usageGridBody');
 function addUsageRow() {
   const tr = document.createElement('tr');
-  tr.innerHTML = USAGE_FIELDS.map((f, i) => {
+  tr.innerHTML = USAGE_GRID_FIELDS.map((f, i) => {
     const isNumeric = i >= USAGE_NUMERIC_FROM && i <= USAGE_NUMERIC_TO;
-    const listAttr = f === 'tax_status' ? 'list="taxStatusList"' : '';
-    return `<td><input type="${isNumeric ? 'number' : 'text'}" ${isNumeric ? 'step="0.01"' : ''} data-col="${i}" ${listAttr}></td>`;
+    return `<td><input type="${isNumeric ? 'number' : 'text'}" ${isNumeric ? 'step="0.01"' : ''} data-col="${i}"></td>`;
   }).join('') + `<td><button type="button" class="row-del-btn" title="삭제">×</button></td>`;
   tr.querySelector('.row-del-btn').addEventListener('click', () => tr.remove());
   usageGridBody.appendChild(tr);
@@ -2412,15 +2416,24 @@ $('#saveUsageGridBtn').addEventListener('click', async () => {
   const usageMonth = `${monthValue}-01`;
   const rows = [];
   $$('tr', usageGridBody).forEach(tr => {
-    const values = USAGE_FIELDS.map((_, i) => tr.querySelector(`input[data-col="${i}"]`).value);
+    const values = USAGE_GRID_FIELDS.map((_, i) => tr.querySelector(`input[data-col="${i}"]`).value);
     if (!values[3] && !values[2]) return; // need at least material name or code
     const rec = { season_id: state.currentSeasonId, usage_month: usageMonth };
-    USAGE_FIELDS.forEach((f, i) => {
+    USAGE_GRID_FIELDS.forEach((f, i) => {
       rec[f] = (i >= USAGE_NUMERIC_FROM && i <= USAGE_NUMERIC_TO) ? numOrNull(values[i]) : (values[i] ? values[i].trim() : null);
     });
     rows.push(rec);
   });
   if (!rows.length) { flash($('#usageSaveMsg'), '입력된 행이 없습니다.', false); return; }
+
+  // 비고/품목/과세여부는 자재코드(별칭 그룹 포함) 기준으로 과거 이력에서 자동으로 이어받는다.
+  const classificationByCode = await buildMaterialClassificationLookup();
+  rows.forEach(r => {
+    const cls = r.material_code ? classificationByCode.get(r.material_code) : null;
+    r.remark = cls?.remark ?? null;
+    r.item_name = cls?.item_name ?? null;
+    r.tax_status = cls?.tax_status ?? null;
+  });
 
   // 같은 시즌+연월에 매장+자재 조합이 이미 있으면 이전 값을 지우고 새 값으로 교체 (다른 연월 데이터는 그대로 유지)
   const keys = new Set(rows.map(r => `${r.store_code}||${r.material_code}`));
@@ -2444,6 +2457,54 @@ async function loadUsageView() {
   if (error) { console.error(error); return; }
   usageViewCache = raw || [];
   renderUsageView();
+  renderUnclassifiedMaterials();
+}
+
+// 자재코드(별칭 그룹) 기준으로, remark가 한 번이라도 채워진 적 있는 자재의 분류를 모아 lookup을 만든다.
+// 저장 시 이 lookup으로 비고/품목/과세여부를 자동으로 채운다 — 매번 다시 입력할 필요가 없어짐.
+async function buildMaterialClassificationLookup() {
+  const [{ data: usageRows }, aliasRes] = await Promise.all([
+    fetchAllRows('material_usage', q => q.not('remark', 'is', null), 'material_code, remark, item_name, tax_status'),
+    sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
+  ]);
+  const parent = new Map();
+  const find = (x) => { if (!parent.has(x)) parent.set(x, x); while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+  (aliasRes.data || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
+
+  const classificationByGroup = new Map(); // 별칭그룹 대표코드 -> {remark, item_name, tax_status}
+  (usageRows || []).forEach(r => {
+    if (!r.material_code) return;
+    const key = find(r.material_code);
+    if (!classificationByGroup.has(key)) classificationByGroup.set(key, { remark: r.remark, item_name: r.item_name, tax_status: r.tax_status });
+  });
+
+  const byCode = new Map();
+  const allCodes = new Set([...(usageRows || []).map(r => r.material_code), ...parent.keys()]);
+  allCodes.forEach(code => {
+    const cls = classificationByGroup.get(find(code));
+    if (cls) byCode.set(code, cls);
+  });
+  return byCode;
+}
+
+// 이 시즌에 remark(비고)가 없는 자재 — 농산 모니터링 등에서 조용히 빠지는 자재를 눈에 띄게 보여준다.
+function renderUnclassifiedMaterials() {
+  const byCode = new Map(); // material_code -> { name, totalAmount }
+  usageViewCache.forEach(r => {
+    if (r.remark || !r.material_code) return;
+    if (!byCode.has(r.material_code)) byCode.set(r.material_code, { name: r.material_name || r.material_code, totalAmount: 0 });
+    byCode.get(r.material_code).totalAmount += Number(r.actual_usage_amount) || 0;
+  });
+  const rows = [...byCode.entries()].sort((a, b) => b[1].totalAmount - a[1].totalAmount);
+
+  $('#unclassifiedMaterialsBody').innerHTML = rows.map(([code, r]) => `
+    <tr>
+      <td>${code}</td>
+      <td class="cell-left">${r.name}</td>
+      <td>${fmtNum(r.totalAmount, 0)}</td>
+    </tr>
+  `).join('') || `<tr><td colspan="3" style="text-align:center;color:var(--muted)">미분류 자재가 없습니다.</td></tr>`;
 }
 
 function renderUsageView() {
