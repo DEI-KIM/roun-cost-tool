@@ -420,13 +420,15 @@
               <option value="target">목표절감액순</option>
               <option value="market">시장절감액순</option>
             </select>
+            <button id="exportProduceExcelBtn" class="btn btn-ghost btn-sm" type="button">엑셀 다운로드</button>
+            <span id="produceExportMsg" class="save-msg"></span>
           </div>
         </div>
         <div class="table-scroll">
           <table class="data-table" id="produceTable">
             <thead>
               <tr>
-                <th>품목</th><th>타겟단가</th><th>로운(직송)</th><th>로운(구매)</th><th>시장단가</th><th>사용액</th><th>목표절감액</th><th>시장절감액</th>
+                <th>품목</th><th>타겟단가</th><th>로운(직송)</th><th>로운(구매)</th><th>시장단가</th><th>직송 사용액</th><th>구매 사용액</th><th>총 사용액</th><th>목표절감액</th><th>시장절감액</th>
               </tr>
             </thead>
             <tbody id="produceTableBody"></tbody>

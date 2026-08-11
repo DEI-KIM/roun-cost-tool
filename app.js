@@ -2132,6 +2132,26 @@ function isFuzzyItemMatch(a, b) {
   return na !== '' && na === nb;
 }
 
+// 품목별로 시장데이터에서 이름이 비슷한 상/특 등급 항목을 찾아 g당단가 평균을 낸다.
+function computeMarketAvgByItem(items, marketRows) {
+  const result = {};
+  items.forEach(item => {
+    const matches = (marketRows || []).filter(mr => isFuzzyItemMatch(item, mr.item_name));
+    const gpgList = matches
+      .map(mr => { const g = parseUnitToGrams(mr.unit); return (g && mr.avg_price != null) ? mr.avg_price / g : null; })
+      .filter(v => v != null);
+    if (gpgList.length) result[item] = gpgList.reduce((a, v) => a + v, 0) / gpgList.length;
+  });
+  return result;
+}
+
+// 타겟단가 = 이번 달 시장단가×0.9. 이번 달 시장데이터가 아직 없으면(미래월 등) 작년 동월 시장단가×0.9로 대신한다.
+function deriveTargetPrice(marketPriceThisMonth, marketPriceSameMonthLastYear) {
+  if (marketPriceThisMonth != null) return marketPriceThisMonth * 0.9;
+  if (marketPriceSameMonthLastYear != null) return marketPriceSameMonthLastYear * 0.9;
+  return null;
+}
+
 // "10kg상자", "20kg", "500g" 같은 거래단위 표기에서 g 단위 중량을 뽑아낸다
 function parseUnitToGrams(unitStr) {
   if (!unitStr) return null;
@@ -2150,11 +2170,16 @@ async function loadProduceMonitoring() {
   const [y, m] = monthValue.split('-').map(Number);
   const nextMonth = new Date(y, m, 1); // m is 1-indexed already -> gives 1st of next month
   const nextMonthStr = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}-01`;
+  // 타겟단가의 "작년 동월" 대체값 계산용 — 미래월(시장데이터 아직 없음)에도 목표가 비지 않게 함
+  const lastYearMonth = `${y - 1}-${String(m).padStart(2, '0')}-01`;
+  const lastYearNextMonth = new Date(y - 1, m, 1);
+  const lastYearNextMonthStr = `${lastYearNextMonth.getFullYear()}-${String(lastYearNextMonth.getMonth() + 1).padStart(2, '0')}-01`;
 
-  const [{ data: usage, error: usageErr }, { data: marketRows }] = await Promise.all([
+  const [{ data: usage, error: usageErr }, { data: marketRows }, { data: lastYearMarketRows }] = await Promise.all([
     fetchAllRows('material_usage',
       q => q.eq('usage_month', monitorMonth).eq('remark', '농산').eq('tax_status', '비과세')),
     fetchAllRows('market_prices', q => q.gte('record_date', monitorMonth).lt('record_date', nextMonthStr).in('grade', ['상', '특'])),
+    fetchAllRows('market_prices', q => q.gte('record_date', lastYearMonth).lt('record_date', lastYearNextMonthStr).in('grade', ['상', '특'])),
   ]);
   if (usageErr) { console.error(usageErr); return; }
 
@@ -2186,21 +2211,15 @@ async function loadProduceMonitoring() {
     : { data: [] };
   const monitorByItem = Object.fromEntries((monitorRows || []).map(r => [r.item_name, r]));
 
-  // 품목별로 시장데이터에서 이름이 비슷한 상/특 등급 항목을 찾아, 시장단가=g당단가 평균, 타겟단가=그 중 가장 낮은 g당단가(강서/가락 통틀어 최저가 1건)로 산출
+  // 시장단가 = 이번 달/작년 동월 각각 g당단가 평균. 타겟단가 = deriveTargetPrice(이번 달 평균×0.9, 없으면 작년 동월 평균×0.9)
+  const computedMarketByItem = computeMarketAvgByItem(items, marketRows);
+  const computedMarketByItemLastYear = computeMarketAvgByItem(items, lastYearMarketRows);
   const marketPriceUpserts = [];
-  const computedMarketByItem = {};
-  const computedTargetByItem = {};
   items.forEach(item => {
-    const matches = (marketRows || []).filter(mr => isFuzzyItemMatch(item, mr.item_name));
-    const gpgList = matches
-      .map(mr => { const g = parseUnitToGrams(mr.unit); return (g && mr.avg_price != null) ? mr.avg_price / g : null; })
-      .filter(v => v != null);
-    if (gpgList.length) {
-      const avg = gpgList.reduce((a, v) => a + v, 0) / gpgList.length;
-      const min = Math.min(...gpgList);
-      computedMarketByItem[item] = avg;
-      computedTargetByItem[item] = min;
-      marketPriceUpserts.push({ item_name: item, monitor_month: monitorMonth, market_price: avg, target_price: min });
+    const marketPrice = computedMarketByItem[item] ?? null;
+    const targetPrice = deriveTargetPrice(computedMarketByItem[item], computedMarketByItemLastYear[item]);
+    if (marketPrice != null || targetPrice != null) {
+      marketPriceUpserts.push({ item_name: item, monitor_month: monitorMonth, market_price: marketPrice, target_price: targetPrice });
     }
   });
   if (marketPriceUpserts.length) {
@@ -2213,8 +2232,10 @@ async function loadProduceMonitoring() {
     const brandPricePurchase = purchase.grams ? purchase.amount / purchase.grams : null;
     const mp = monitorByItem[item] || {};
     const marketPrice = computedMarketByItem[item] ?? mp.market_price ?? null;
-    const targetPrice = computedTargetByItem[item] ?? mp.target_price ?? null;
-    const usageAmount = direct.amount + purchase.amount;
+    const targetPrice = deriveTargetPrice(computedMarketByItem[item], computedMarketByItemLastYear[item]) ?? mp.target_price ?? null;
+    const usageAmountDirect = direct.amount;
+    const usageAmountPurchase = purchase.amount;
+    const usageAmountTotal = direct.amount + purchase.amount;
 
     // 직송/구매 각각의 사용액×단가차이를 더해서 전체 절감액을 낸다 (채널별 단가가 다르므로 합산이 하나의 평균단가보다 정확함)
     let targetSavings = null, marketSavings = null;
@@ -2227,7 +2248,8 @@ async function loadProduceMonitoring() {
     return {
       item_name: item, target_price: targetPrice,
       brand_price_direct: brandPriceDirect, brand_price_purchase: brandPricePurchase,
-      market_price: marketPrice, usage_amount: usageAmount,
+      market_price: marketPrice,
+      usage_amount_direct: usageAmountDirect, usage_amount_purchase: usageAmountPurchase, usage_amount_total: usageAmountTotal,
       target_savings: targetSavings, market_savings: marketSavings,
     };
   });
@@ -2238,25 +2260,30 @@ async function loadProduceMonitoring() {
 function renderProduceTable() {
   const sortMode = $('#produceSortSelect').value;
   const rows = produceRowsCache.slice().sort((a, b) => {
-    if (sortMode === 'usage') return (b.usage_amount || 0) - (a.usage_amount || 0);
+    if (sortMode === 'usage') return (b.usage_amount_total || 0) - (a.usage_amount_total || 0);
     if (sortMode === 'target') return (b.target_savings ?? -Infinity) - (a.target_savings ?? -Infinity);
     if (sortMode === 'market') return (b.market_savings ?? -Infinity) - (a.market_savings ?? -Infinity);
     return a.item_name.localeCompare(b.item_name, 'ko');
   });
 
   const body = $('#produceTableBody');
-  body.innerHTML = rows.map(r => `
+  body.innerHTML = rows.map(r => {
+    const directPct = r.usage_amount_total ? r.usage_amount_direct / r.usage_amount_total * 100 : 0;
+    const purchasePct = r.usage_amount_total ? r.usage_amount_purchase / r.usage_amount_total * 100 : 0;
+    return `
     <tr data-item="${r.item_name}">
       <td class="cell-left produce-item-name">${r.item_name}</td>
       <td>${r.target_price != null ? fmtNum(r.target_price, 1) : '-'}</td>
       <td>${r.brand_price_direct != null ? fmtNum(r.brand_price_direct, 1) : '-'}</td>
       <td>${r.brand_price_purchase != null ? fmtNum(r.brand_price_purchase, 1) : '-'}</td>
       <td>${r.market_price != null ? fmtNum(r.market_price, 1) : '-'}</td>
-      <td>${fmtNum(r.usage_amount, 0)}</td>
+      <td>${fmtNum(r.usage_amount_direct, 0)} <span class="hint">(${fmtNum(directPct, 0)}%)</span></td>
+      <td>${fmtNum(r.usage_amount_purchase, 0)} <span class="hint">(${fmtNum(purchasePct, 0)}%)</span></td>
+      <td>${fmtNum(r.usage_amount_total, 0)}</td>
       <td>${r.target_savings != null ? fmtNum(r.target_savings, 0) : '-'}</td>
       <td>${r.market_savings != null ? fmtNum(r.market_savings, 0) : '-'}</td>
-    </tr>
-  `).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--muted)">해당 연월에 농산 자재 데이터가 없습니다.</td></tr>`;
+    </tr>`;
+  }).join('') || `<tr><td colspan="10" style="text-align:center;color:var(--muted)">해당 연월에 농산 자재 데이터가 없습니다.</td></tr>`;
 
   $$('.produce-item-name', body).forEach(td => {
     td.addEventListener('click', () => toggleProduceChartRow(td.closest('tr')));
@@ -2319,16 +2346,23 @@ async function loadProduceChart(itemName) {
     if (!key || !g || mr.avg_price == null) return;
     (gpgByMonth[key] = gpgByMonth[key] || []).push(mr.avg_price / g);
   });
-  const marketByMonth = {}, targetByMonth = {};
-  Object.entries(gpgByMonth).forEach(([k, list]) => {
-    marketByMonth[k] = list.reduce((a, v) => a + v, 0) / list.length;
-    targetByMonth[k] = Math.min(...list);
-  });
+  const marketByMonth = {};
+  Object.entries(gpgByMonth).forEach(([k, list]) => { marketByMonth[k] = list.reduce((a, v) => a + v, 0) / list.length; });
 
-  const months = [...new Set([...Object.keys(byMonth), ...Object.keys(marketByMonth)])].sort();
+  const actualMonths = [...new Set([...Object.keys(byMonth), ...Object.keys(marketByMonth)])].sort();
+  // 최신 실데이터 달 다음 달부터 그 해 12월까지는 실적 없이 목표단가(작년 동월×0.9) 투사선만 이어서 보여준다
+  const lastActual = actualMonths[actualMonths.length - 1];
+  const futureMonths = [];
+  if (lastActual) {
+    const [ly, lm] = lastActual.split('-').map(Number);
+    for (let mm = lm + 1; mm <= 12; mm++) futureMonths.push(`${ly}-${String(mm).padStart(2, '0')}`);
+  }
+  const months = [...actualMonths, ...futureMonths];
+  const lastYearKeyOf = (key) => { const [ky, km] = key.split('-').map(Number); return `${ky - 1}-${String(km).padStart(2, '0')}`; };
+
   renderProduceChart(
     months,
-    months.map(m => targetByMonth[m] ?? null),
+    months.map(m => deriveTargetPrice(marketByMonth[m], marketByMonth[lastYearKeyOf(m)]) ?? null),
     months.map(m => byMonth[m]?.direct.grams ? (byMonth[m].direct.amount / byMonth[m].direct.grams) : null),
     months.map(m => byMonth[m]?.purchase.grams ? (byMonth[m].purchase.amount / byMonth[m].purchase.grams) : null),
     months.map(m => marketByMonth[m] ?? null),
@@ -2360,11 +2394,14 @@ function renderProduceChart(months, targetSeries, directSeries, purchaseSeries, 
   const xLabels = months.map((m, i) => `<text x="${xFor(i)}" y="${height - 4}" font-size="10" fill="var(--muted)" text-anchor="middle">${m.slice(2)}</text>`).join('');
 
   const seriesSvg = seriesDefs.map(s => {
-    const pts = s.values.map((v, i) => v != null ? [xFor(i), yFor(v)] : null).filter(Boolean);
+    // month/value를 좌표와 같이 들고 다녀서 점에 마우스를 올리면 값이 보이는 툴팁(<title>)을 붙일 수 있게 한다
+    const pts = s.values.map((v, i) => v != null ? [xFor(i), yFor(v), months[i], v] : null).filter(Boolean);
     return { s, path: buildSmoothPath(pts), pts };
   });
   const paths = seriesSvg.map(({ s, path }) => path ? `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2.5" stroke-linecap="round" />` : '').join('');
-  const dots = seriesSvg.flatMap(({ s, pts }) => pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3" fill="${s.color}" />`)).join('');
+  const dots = seriesSvg.flatMap(({ s, pts }) => pts.map(([x, y, month, v]) =>
+    `<circle cx="${x}" cy="${y}" r="4" fill="${s.color}"><title>${s.label} ${month}: ${fmtNum(v, 1)}원/g</title></circle>`
+  )).join('');
   const legend = seriesDefs.map(s => `<span><span class="dot" style="background:${s.color}"></span>${s.label}</span>`).join('');
 
   wrap.innerHTML = `
@@ -2373,6 +2410,130 @@ function renderProduceChart(months, targetSeries, directSeries, purchaseSeries, 
       ${gridLines}${paths}${dots}${xLabels}
     </svg>`;
 }
+
+// ---- 농산 모니터링 엑셀 다운로드 (시즌/연월 무관, 최초 데이터부터 현재까지 전체 이력) ----
+function formatMonthLabelKorean(monthKey) { // "2026-09" -> "26년9월"
+  const [y, m] = monthKey.split('-');
+  return `${y.slice(2)}년${Number(m)}월`;
+}
+function monthRangeInclusive(startKey, endKey) {
+  const [sy, sm] = startKey.split('-').map(Number);
+  const [ey, em] = endKey.split('-').map(Number);
+  const out = [];
+  let y = sy, m = sm;
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(`${y}-${String(m).padStart(2, '0')}`);
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+function lastYearKeyOfMonth(key) {
+  const [ky, km] = key.split('-').map(Number);
+  return `${ky - 1}-${String(km).padStart(2, '0')}`;
+}
+function roundOrBlank(v, digits) { return v == null ? '' : Math.round(v * 10 ** digits) / 10 ** digits; }
+
+async function exportProduceExcel() {
+  const btn = $('#exportProduceExcelBtn');
+  btn.disabled = true;
+  try {
+    flash($('#produceExportMsg'), '데이터 모으는 중...');
+    const [{ data: usageRows, error: usageErr }, { data: marketRows }] = await Promise.all([
+      fetchAllRows('material_usage', q => q.eq('remark', '농산').eq('tax_status', '비과세')),
+      fetchAllRows('market_prices', q => q.in('grade', ['상', '특'])),
+    ]);
+    if (usageErr) { flash($('#produceExportMsg'), '데이터를 불러오지 못했습니다: ' + usageErr.message, false); return; }
+
+    // 품목×월별 직송/구매 grams·amount 집계
+    const usageByItemMonth = {}; // item -> month -> {direct:{grams,amount}, purchase:{grams,amount}}
+    (usageRows || []).forEach(r => {
+      const item = (r.item_name || r.material_name || '').trim();
+      if (!item || !r.usage_month) return;
+      const month = r.usage_month.slice(0, 7);
+      const grams = (Number(r.actual_usage_qty) || 0) * (Number(r.conversion_factor) || 0);
+      const bucketKey = (r.material_name || '').includes('직송') ? 'direct' : 'purchase';
+      if (!usageByItemMonth[item]) usageByItemMonth[item] = {};
+      if (!usageByItemMonth[item][month]) usageByItemMonth[item][month] = { direct: { grams: 0, amount: 0 }, purchase: { grams: 0, amount: 0 } };
+      usageByItemMonth[item][month][bucketKey].grams += grams;
+      usageByItemMonth[item][month][bucketKey].amount += Number(r.actual_usage_amount) || 0;
+    });
+    const items = Object.keys(usageByItemMonth);
+    if (!items.length) { flash($('#produceExportMsg'), '농산 자재 데이터가 없습니다.', false); return; }
+
+    // 정규화 이름 기준으로 시장데이터를 한 번만 그룹핑해서(품목 수 × 시장행 수 전수비교를 피함) 품목×월별 g당단가 평균을 낸다
+    const marketRowsByNormName = new Map();
+    (marketRows || []).forEach(mr => {
+      const norm = normalizeProduceName(mr.item_name);
+      if (!norm) return;
+      if (!marketRowsByNormName.has(norm)) marketRowsByNormName.set(norm, []);
+      marketRowsByNormName.get(norm).push(mr);
+    });
+    const marketByItemMonth = {}; // item -> month -> avgGpg
+    items.forEach(item => {
+      const candidates = marketRowsByNormName.get(normalizeProduceName(item)) || [];
+      const gpgByMonth = {};
+      candidates.forEach(mr => {
+        const month = (mr.record_date || '').slice(0, 7);
+        const g = parseUnitToGrams(mr.unit);
+        if (!month || !g || mr.avg_price == null) return;
+        (gpgByMonth[month] = gpgByMonth[month] || []).push(mr.avg_price / g);
+      });
+      const byMonth = {};
+      Object.entries(gpgByMonth).forEach(([k, list]) => { byMonth[k] = list.reduce((a, v) => a + v, 0) / list.length; });
+      marketByItemMonth[item] = byMonth;
+    });
+
+    // 월 범위: 실사용 데이터가 있는 가장 이른 달 ~ (가장 최근 달을 그 해 12월까지 연장 — 미래월은 타겟단가 투사용)
+    const allUsageMonths = new Set();
+    items.forEach(item => Object.keys(usageByItemMonth[item]).forEach(m => allUsageMonths.add(m)));
+    const sortedUsageMonths = [...allUsageMonths].sort();
+    const firstMonth = sortedUsageMonths[0];
+    const lastUsageMonth = sortedUsageMonths[sortedUsageMonths.length - 1];
+    const [lastY] = lastUsageMonth.split('-').map(Number);
+    const endMonth = `${lastY}-12`;
+    const monthKeys = monthRangeInclusive(firstMonth, endMonth);
+
+    // 품목 정렬: 가장 최근월(lastUsageMonth) 사용액(직송+구매) 많은 순
+    const usageAtLastMonth = (item) => {
+      const b = usageByItemMonth[item]?.[lastUsageMonth];
+      return b ? b.direct.amount + b.purchase.amount : 0;
+    };
+    const sortedItems = items.slice().sort((a, b) => usageAtLastMonth(b) - usageAtLastMonth(a));
+
+    const priceOf = (item, month, bucket) => {
+      const b = usageByItemMonth[item]?.[month]?.[bucket];
+      return b?.grams ? b.amount / b.grams : null;
+    };
+
+    const aoa = [['품목', '', ...monthKeys.map(formatMonthLabelKorean)]];
+    sortedItems.forEach(item => {
+      const targetRow = monthKeys.map(m => roundOrBlank(deriveTargetPrice(marketByItemMonth[item][m], marketByItemMonth[item][lastYearKeyOfMonth(m)]), 2));
+      const marketRow = monthKeys.map(m => roundOrBlank(marketByItemMonth[item][m], 2));
+      const directRow = monthKeys.map(m => roundOrBlank(priceOf(item, m, 'direct'), 2));
+      const purchaseRow = monthKeys.map(m => roundOrBlank(priceOf(item, m, 'purchase'), 2));
+      const targetVsDirectRow = monthKeys.map((m, i) => (targetRow[i] !== '' && directRow[i] !== '') ? roundOrBlank(directRow[i] / targetRow[i] * 100, 1) : '');
+      const marketVsPurchaseRow = monthKeys.map((m, i) => (marketRow[i] !== '' && purchaseRow[i] !== '') ? roundOrBlank(purchaseRow[i] / marketRow[i] * 100, 1) : '');
+
+      aoa.push([item, '타겟단가', ...targetRow]);
+      aoa.push(['', '시장단가', ...marketRow]);
+      aoa.push(['', '로운(직송)', ...directRow]);
+      aoa.push(['', '로운(구매)', ...purchaseRow]);
+      aoa.push(['', '타겟대비 직송(%)', ...targetVsDirectRow]);
+      aoa.push(['', '시장대비 구매(%)', ...marketVsPurchaseRow]);
+    });
+
+    const sheet = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, '농산모니터링');
+    const today = new Date();
+    const filename = `농산모니터링_${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}.xlsx`;
+    XLSX.writeFile(wb, filename);
+    flash($('#produceExportMsg'), `${sortedItems.length}개 품목, ${monthKeys.length}개월치 다운로드 완료`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+$('#exportProduceExcelBtn').addEventListener('click', exportProduceExcel);
 
 // =====================================================================
 // Tab 6: Material usage (자재 사용량)
