@@ -2457,7 +2457,7 @@ async function loadUsageView() {
   if (error) { console.error(error); return; }
   usageViewCache = raw || [];
   renderUsageView();
-  renderUnclassifiedMaterials();
+  loadAndRenderUnclassifiedMaterials();
 }
 
 // 자재코드(별칭 그룹) 기준으로, remark가 한 번이라도 채워진 적 있는 자재의 분류를 모아 lookup을 만든다.
@@ -2488,8 +2488,10 @@ async function buildMaterialClassificationLookup() {
   return byCode;
 }
 
-// 이 시즌에 remark(비고)가 없는 자재 — 농산 모니터링 등에서 조용히 빠지는 자재를 눈에 띄게 보여준다.
-function renderUnclassifiedMaterials() {
+// 이 시즌에 remark(비고)가 없는 자재 — 농산 모니터링 등에서 조용히 빠지는 자재를 눈에 띄게 보여주고,
+// 이름이 비슷한 이미 분류된 자재가 있으면 "자재 매칭 후보"와 같은 방식으로 추천해서 한 번 클릭으로 적용할 수 있게 한다.
+let unclassifiedCandidatesByCode = new Map(); // material_code -> {name, remark, item_name, tax_status, similarity} | null
+async function loadAndRenderUnclassifiedMaterials() {
   const byCode = new Map(); // material_code -> { name, totalAmount }
   usageViewCache.forEach(r => {
     if (r.remark || !r.material_code) return;
@@ -2498,13 +2500,57 @@ function renderUnclassifiedMaterials() {
   });
   const rows = [...byCode.entries()].sort((a, b) => b[1].totalAmount - a[1].totalAmount);
 
-  $('#unclassifiedMaterialsBody').innerHTML = rows.map(([code, r]) => `
-    <tr>
+  unclassifiedCandidatesByCode = new Map();
+  if (rows.length) {
+    // 이미 분류된 자재 풀(자재코드 단위, 시즌 무관)에서 이름이 비슷한 후보를 찾는다.
+    // 품목·과세여부는 잘못 추천되면 회계상 영향이 있어서, 별칭 판별과 같은 엄격한 기준(0.9)을 쓴다.
+    const { data: classifiedRows } = await fetchAllRows('material_usage', q => q.not('remark', 'is', null), 'material_code, material_name, remark, item_name, tax_status');
+    const classifiedPool = new Map();
+    (classifiedRows || []).forEach(r => { if (r.material_code && !classifiedPool.has(r.material_code)) classifiedPool.set(r.material_code, r); });
+
+    rows.forEach(([code, r]) => {
+      let best = null;
+      classifiedPool.forEach((c, candCode) => {
+        if (candCode === code) return;
+        const sim = materialNameSimilarity(r.name, c.material_name);
+        if (sim >= MATERIAL_ALIAS_THRESHOLD && (!best || sim > best.similarity)) {
+          best = { code: candCode, name: c.material_name, remark: c.remark, item_name: c.item_name, tax_status: c.tax_status, similarity: sim };
+        }
+      });
+      if (best) unclassifiedCandidatesByCode.set(code, best);
+    });
+  }
+
+  $('#unclassifiedMaterialsBody').innerHTML = rows.map(([code, r]) => {
+    const cand = unclassifiedCandidatesByCode.get(code);
+    const candCell = cand
+      ? `${cand.item_name || cand.name} <span class="hint">(비고:${cand.remark ?? '-'} · 과세:${cand.tax_status ?? '-'} · 유사도 ${Math.round(cand.similarity * 100)}%)</span> ` +
+        `<button type="button" class="btn btn-sm btn-primary apply-classification-btn" data-code="${code}">적용</button>`
+      : `<span class="hint">후보 없음</span>`;
+    return `
+    <tr data-code="${code}">
       <td>${code}</td>
       <td class="cell-left">${r.name}</td>
       <td>${fmtNum(r.totalAmount, 0)}</td>
-    </tr>
-  `).join('') || `<tr><td colspan="3" style="text-align:center;color:var(--muted)">미분류 자재가 없습니다.</td></tr>`;
+      <td class="cell-left">${candCell}</td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="4" style="text-align:center;color:var(--muted)">미분류 자재가 없습니다.</td></tr>`;
+
+  $$('.apply-classification-btn', $('#unclassifiedMaterialsBody')).forEach(btn => {
+    btn.addEventListener('click', () => applyUnclassifiedCandidate(btn.dataset.code));
+  });
+}
+
+// 추천 후보의 비고/품목/과세여부를, 이 자재코드가 등장한 모든 material_usage 행(시즌 무관)에 그대로 적용한다.
+async function applyUnclassifiedCandidate(code) {
+  const cand = unclassifiedCandidatesByCode.get(code);
+  if (!cand) return;
+  const { error } = await sb.from('material_usage')
+    .update({ remark: cand.remark, item_name: cand.item_name, tax_status: cand.tax_status })
+    .eq('material_code', code);
+  if (error) { flash($('#usageBulkMsg'), '분류 적용 실패: ' + error.message, false); return; }
+  flash($('#usageBulkMsg'), `${code} 자재에 "${cand.item_name || cand.name}" 분류를 적용했습니다.`);
+  await loadUsageView();
 }
 
 function renderUsageView() {
