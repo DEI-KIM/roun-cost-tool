@@ -38,9 +38,9 @@
       <label for="seasonSelect" class="season-label">시즌</label>
       <select id="seasonSelect"></select>
       <label for="seasonStartMonth" class="season-label">범위</label>
-      <input type="month" id="seasonStartMonth" class="season-range-input">
+      <input type="date" id="seasonStartMonth" class="season-range-input">
       <span class="season-range-sep">~</span>
-      <input type="month" id="seasonEndMonth" class="season-range-input">
+      <input type="date" id="seasonEndMonth" class="season-range-input">
       <button id="newSeasonBtn" class="btn btn-ghost btn-sm" type="button">+ 새 시즌</button>
     </div>
     <button id="logoutBtn" class="btn btn-ghost btn-sm" type="button">로그아웃</button>
@@ -456,6 +456,8 @@
         <div class="history-year-row">
           <span class="hint">등록 연월</span>
           <input type="month" id="usageMonthInput">
+          <span class="hint">주차</span>
+          <select id="usageWeekSelect"></select>
           <button id="saveUsageGridBtn" class="btn btn-primary btn-sm" type="button">저장</button>
           <span id="usageSaveMsg" class="save-msg"></span>
         </div>
@@ -637,6 +639,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608111700"></script>
+<script src="app.js?v=202608111800"></script>
 </body>
 </html>

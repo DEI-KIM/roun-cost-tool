@@ -186,24 +186,36 @@ function setupDatalist() {
 }
 
 // ---------- Seasons ----------
-// 시즌의 실제 데이터 매칭은 season_id가 아니라 start_month~end_month 범위로 이루어진다.
-// (자재사용량/매출·객수는 등록 연월이 이 범위 안에 들어오는 데이터를 가져와 연동한다)
-function monthToDate(monthStr) { return monthStr ? `${monthStr}-01` : null; }
-function dateToMonth(dateStr) { return dateStr ? String(dateStr).slice(0, 7) : ''; }
+// 시즌의 실제 데이터 매칭은 season_id가 아니라 start_month~end_month 범위(일 단위)로 이루어진다.
+// (자재사용량/매출·객수는 실제 날짜가 이 범위 안에 들어오는 데이터를 가져와 연동한다)
 function nextMonthDate(dateStr) {
   if (!dateStr) return null;
   const [y, m] = dateStr.split('-').map(Number);
   const d = new Date(y, m, 1); // m은 1-indexed이므로 그대로 넘기면 다음달 1일이 됨
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
 }
+function nextDay(dateStr) {
+  if (!dateStr) return null;
+  const [y, m, day] = dateStr.split('-').map(Number);
+  const d = new Date(y, m - 1, day);
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function lastDayOfMonth(dateStr) {
+  if (!dateStr) return null;
+  const [y, m] = dateStr.split('-').map(Number);
+  const d = new Date(y, m, 0); // day 0 of next month = last day of this month
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 function currentSeason() {
   return state.seasons.find(s => s.id === state.currentSeasonId) || null;
 }
-// 시즌에 범위가 지정되어 있으면 범위로 필터링하고, 아직 범위가 없으면 기존 방식(season_id)으로 대체
+// 시즌에 범위가 지정되어 있으면 범위로 필터링하고, 아직 범위가 없으면 기존 방식(season_id)으로 대체.
+// end_month는 "포함되는 마지막 날짜"(일 단위)로 저장되어 있어, 상한은 그 다음 날 미만으로 잡는다.
 function applySeasonDateFilter(query, dateField) {
   const season = currentSeason();
   if (season?.start_month && season?.end_month) {
-    return query.gte(dateField, season.start_month).lt(dateField, nextMonthDate(season.end_month));
+    return query.gte(dateField, season.start_month).lt(dateField, nextDay(season.end_month));
   }
   return query.eq('season_id', state.currentSeasonId);
 }
@@ -246,8 +258,8 @@ async function loadSeasons() {
 
 function renderSeasonRangeInputs() {
   const season = currentSeason();
-  $('#seasonStartMonth').value = season ? dateToMonth(season.start_month) : '';
-  $('#seasonEndMonth').value = season ? dateToMonth(season.end_month) : '';
+  $('#seasonStartMonth').value = season?.start_month || '';
+  $('#seasonEndMonth').value = season?.end_month || '';
 }
 
 function setupSeasonControls() {
@@ -274,12 +286,12 @@ function setupSeasonControls() {
     const startVal = $('#seasonStartMonth').value;
     const endVal = $('#seasonEndMonth').value;
     if (startVal && endVal && startVal > endVal) {
-      alert('시작월이 종료월보다 늦을 수 없습니다.');
+      alert('시작일이 종료일보다 늦을 수 없습니다.');
       renderSeasonRangeInputs();
       return;
     }
     const { error } = await sb.from('seasons')
-      .update({ start_month: monthToDate(startVal), end_month: monthToDate(endVal) })
+      .update({ start_month: startVal || null, end_month: endVal || null })
       .eq('id', state.currentSeasonId);
     if (error) { alert('시즌 범위 저장 실패: ' + error.message); return; }
     await loadSeasons();
@@ -1342,7 +1354,7 @@ async function findMaterialAliasCandidates() {
   if (!flat) return [];
   const { rawMaterialNameByCode } = flat;
 
-  const { data: usageRows } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month'));
+  const { data: usageRows } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'period_end'));
   const usageByCode = new Map();
   (usageRows || []).forEach(r => {
     if (!r.material_code) return;
@@ -1586,7 +1598,7 @@ async function computeMenuConsumption(onProgress) {
   const { flatByMenu, cookedWeightByMenu, finalMenus, availabilityPatternByMenu } = flat;
 
   const [{ data: usageRows, error: usageErr }, { data: salesRows, error: salesErr }, { data: designRows }, aliasRes] = await Promise.all([
-    fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month')),
+    fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'period_end')),
     fetchAllRows('store_sales', q => applySeasonDateFilter(q, 'sales_date')),
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
@@ -1753,11 +1765,17 @@ async function computeMenuConsumption(onProgress) {
       consumption_source = 'design_fallback';
       confidence = 0;
     }
+    // 카테고리/브랜드 합산 전용 값 — 메뉴마다 다른 운영패턴 손님 수로 나누면(위 consumption_per_person)
+    // 서로 다른 분모를 그냥 더하는 셈이 되어 주말·디너 한정 메뉴가 있는 쪽이 과대 반영된다.
+    // 합산할 때는 항상 시즌 전체 손님 수로 나눈 값을 써야 분모가 통일되어 정확히 더해진다.
+    const consumption_per_person_brand = (storesWithData > 0 && totalCustomers > 0) ? sumGrams / totalCustomers : null;
 
     return {
       menu_name: menu,
       consumption_per_person,
       consumption_per_person_excl_water: consumption_per_person != null ? consumption_per_person * (1 - wr) : null,
+      consumption_per_person_brand,
+      consumption_per_person_brand_excl_water: consumption_per_person_brand != null ? consumption_per_person_brand * (1 - wr) : null,
       consumption_source,
       confidence,
       availability_pattern_value: patternsForMenu.value,
@@ -1776,7 +1794,7 @@ async function computeMenuConsumption(onProgress) {
 // 레시피 등록 단가(최초 1회성 수기입력, 원/kg -> 원/g 환산)로 대체한다. computeActualCostPerGram과
 // 메뉴 진단 탭(자재별 원가 기여도 분석)이 이 로직을 공유한다.
 async function buildMaterialPriceResolver(seasonId) {
-  const { data: monthRows } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month'), 'usage_month');
+  const { data: monthRows } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'period_end'), 'usage_month');
   const months = [...new Set((monthRows || []).map(r => r.usage_month).filter(Boolean))].sort();
   const latestMonth = months[months.length - 1];
   if (!latestMonth) return { error: '자재사용량 데이터가 없습니다.' };
@@ -1972,23 +1990,32 @@ function renderStoreHeatmapTable() {
 
 $('#heatmapCategorySelect').addEventListener('change', renderStoreHeatmapTable);
 
-// 메뉴별 인당소비량(소비가중평균)을 카테고리 단위로 합산해 대시보드 실적에 반영
-async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, totalSales, totalCustomers) {
+// 메뉴별 인당소비량(소비가중평균)을 카테고리 단위로 합산해 대시보드 실적에 반영.
+// consumptionResults는 computeMenuConsumption()의 결과(옵션) — 메뉴마다 운영패턴이 달라 손님 수 분모가
+// 다르므로, 합산 전용으로는 시즌 전체 손님 수로 나눈 consumption_per_person_brand를 써야 한다
+// (그냥 consumption_per_person을 더하면 주말·디너 한정 메뉴가 과대 반영되어 브랜드 실적이 부풀려진다).
+async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, totalSales, totalCustomers, consumptionResults) {
   const [{ data: designs }, { data: consumption }] = await Promise.all([
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     fetchAllRows('menu_consumption', q => q.eq('season_id', seasonId)),
   ]);
   const consumptionByMenu = Object.fromEntries((consumption || []).map(c => [c.menu_name, c]));
+  const brandByMenu = Object.fromEntries((consumptionResults || []).map(r => [r.menu_name, r]));
   const byCat = {};
   (designs || []).forEach(m => {
     const c = consumptionByMenu[m.menu_name];
+    const b = brandByMenu[m.menu_name];
     // 실제 자재사용량 기준으로 재계산한 g당원가가 있으면 그걸 쓰고, 아직 계산 전인 메뉴는 설계 단가로 대체
     const costPerGram = c?.actual_cost_per_gram ?? m.cost_per_gram;
-    if (!m.category || c?.consumption_per_person == null || costPerGram == null) return;
+    // 합산용 인당소비량: 시즌 전체 손님 기준(consumption_per_person_brand)을 우선 쓰고,
+    // 매장 실사용 근거가 없어 설계값으로 대체된 메뉴(design_fallback)는 그 값 그대로 둔다.
+    const consumptionForRollup = b?.consumption_per_person_brand ?? c?.consumption_per_person;
+    const consumptionForRollupExclWater = b?.consumption_per_person_brand_excl_water ?? c?.consumption_per_person_excl_water ?? consumptionForRollup;
+    if (!m.category || consumptionForRollup == null || costPerGram == null) return;
     if (!byCat[m.category]) byCat[m.category] = [];
     byCat[m.category].push({
-      cost_per_gram: costPerGram, consumption_per_person: c.consumption_per_person,
-      consumption_per_person_excl_water: c.consumption_per_person_excl_water ?? c.consumption_per_person,
+      cost_per_gram: costPerGram, consumption_per_person: consumptionForRollup,
+      consumption_per_person_excl_water: consumptionForRollupExclWater,
     });
   });
 
@@ -2081,7 +2108,7 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
       }
     }
 
-    await rebuildCategoryActualRollupFromMenus(state.currentSeasonId, pricePerCustomer, totalSales, totalCustomers);
+    await rebuildCategoryActualRollupFromMenus(state.currentSeasonId, pricePerCustomer, totalSales, totalCustomers, results);
 
     const exactCount = results.filter(r => r.consumption_source === 'exact').length;
     const allocatedCount = results.filter(r => r.consumption_source === 'allocated').length;
@@ -2568,11 +2595,52 @@ const USAGE_FIELDS = [...USAGE_GRID_FIELDS, ...USAGE_CLASSIFICATION_FIELDS];
 const USAGE_NUMERIC_FROM = 6; // conversion_factor onward through actual_usage_amount (index 14) are numeric
 const USAGE_NUMERIC_TO = 14;
 
-// default the month picker to the current month
+// 재고실사 주기: 매주 월요일 + 매달 말일(요일 무관). 한 주의 실사용 기간은 (직전 실사일, 이번 실사일].
+// 선택한 연월에 "실사일(period_end)"이 속하는 주차들을 계산한다 — 과거 대량 백필 때 파일명으로 검증한 규칙과 동일.
+function computeWeekOptionsForMonth(year, month) {
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const isCutoffDay = (d) => {
+    if (d.getDay() === 1) return true; // 월요일
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    return d.getDate() === lastDay; // 말일
+  };
+  const scanStart = new Date(year, month - 2, 1); // 전월 1일부터 스캔해야 이번달 첫 주의 시작일을 알 수 있음
+  const scanEnd = new Date(year, month - 1, new Date(year, month, 0).getDate());
+  const cutoffs = [];
+  for (let d = new Date(scanStart); d <= scanEnd; d.setDate(d.getDate() + 1)) {
+    if (isCutoffDay(d)) cutoffs.push(new Date(d));
+  }
+  const weeks = [];
+  for (let i = 1; i < cutoffs.length; i++) {
+    const end = cutoffs[i];
+    if (end.getFullYear() !== year || end.getMonth() + 1 !== month) continue;
+    const start = new Date(cutoffs[i - 1]);
+    start.setDate(start.getDate() + 1);
+    weeks.push({ periodStart: fmt(start), periodEnd: fmt(end) });
+  }
+  weeks.forEach((w, i) => {
+    w.label = `${i + 1}주차 (${w.periodStart.slice(5)} ~ ${w.periodEnd.slice(5)})`;
+  });
+  return weeks;
+}
+
+function renderUsageWeekOptions() {
+  const monthValue = $('#usageMonthInput').value; // "YYYY-MM"
+  const sel = $('#usageWeekSelect');
+  if (!monthValue) { sel.innerHTML = ''; return; }
+  const [y, m] = monthValue.split('-').map(Number);
+  const weeks = computeWeekOptionsForMonth(y, m);
+  sel.innerHTML = weeks.map(w => `<option value="${w.periodStart}|${w.periodEnd}">${w.label}</option>`).join('');
+  if (weeks.length) sel.value = `${weeks[weeks.length - 1].periodStart}|${weeks[weeks.length - 1].periodEnd}`;
+}
+
+// 연월 선택 시 그 달의 주차 옵션으로 갱신, 기본값은 현재월의 마지막 주차
 (() => {
   const now = new Date();
   $('#usageMonthInput').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  renderUsageWeekOptions();
 })();
+$('#usageMonthInput').addEventListener('change', renderUsageWeekOptions);
 
 const usageGridBody = $('#usageGridBody');
 function addUsageRow() {
@@ -2593,12 +2661,15 @@ $('#saveUsageGridBtn').addEventListener('click', async () => {
   if (!state.currentSeasonId) return;
   const monthValue = $('#usageMonthInput').value; // "YYYY-MM"
   if (!monthValue) { flash($('#usageSaveMsg'), '등록 연월을 선택해주세요.', false); return; }
-  const usageMonth = `${monthValue}-01`;
+  const weekValue = $('#usageWeekSelect').value; // "periodStart|periodEnd"
+  if (!weekValue) { flash($('#usageSaveMsg'), '주차를 선택해주세요.', false); return; }
+  const [periodStart, periodEnd] = weekValue.split('|');
+  const usageMonth = `${periodEnd.slice(0, 7)}-01`; // 실사일(period_end)이 속한 달 기준
   const rows = [];
   $$('tr', usageGridBody).forEach(tr => {
     const values = USAGE_GRID_FIELDS.map((_, i) => tr.querySelector(`input[data-col="${i}"]`).value);
     if (!values[3] && !values[2]) return; // need at least material name or code
-    const rec = { season_id: state.currentSeasonId, usage_month: usageMonth };
+    const rec = { season_id: state.currentSeasonId, usage_month: usageMonth, period_start: periodStart, period_end: periodEnd };
     USAGE_GRID_FIELDS.forEach((f, i) => {
       rec[f] = (i >= USAGE_NUMERIC_FROM && i <= USAGE_NUMERIC_TO) ? numOrNull(values[i]) : (values[i] ? values[i].trim() : null);
     });
@@ -2615,10 +2686,11 @@ $('#saveUsageGridBtn').addEventListener('click', async () => {
     r.tax_status = cls?.tax_status ?? null;
   });
 
-  // 같은 시즌+연월에 매장+자재 조합이 이미 있으면 이전 값을 지우고 새 값으로 교체 (다른 연월 데이터는 그대로 유지)
+  // 같은 주차(period_start~period_end)에 매장+자재 조합이 이미 있으면 이전 값을 지우고 새 값으로 교체
+  // (다른 주차 데이터는 그대로 유지 — 한 달에 여러 주를 나눠 저장해도 서로 지우지 않는다)
   const keys = new Set(rows.map(r => `${r.store_code}||${r.material_code}`));
   const { data: existing } = await fetchAllRows('material_usage',
-    q => q.eq('usage_month', usageMonth), 'id, store_code, material_code');
+    q => q.eq('period_start', periodStart).eq('period_end', periodEnd), 'id, store_code, material_code');
   const toDelete = (existing || []).filter(e => keys.has(`${e.store_code}||${e.material_code}`)).map(e => e.id);
   if (toDelete.length) await deleteInChunks('material_usage', toDelete);
 
@@ -2626,14 +2698,14 @@ $('#saveUsageGridBtn').addEventListener('click', async () => {
   if (error) { flash($('#usageSaveMsg'), '저장 실패: ' + error.message, false); return; }
   usageGridBody.innerHTML = '';
   for (let i = 0; i < 3; i++) addUsageRow();
-  flash($('#usageSaveMsg'), `${rows.length}개 행이 저장되었습니다.${toDelete.length ? ` (${monthValue} 내 겹치는 ${toDelete.length}개 교체됨)` : ''}`);
+  flash($('#usageSaveMsg'), `${rows.length}개 행이 저장되었습니다.${toDelete.length ? ` (${periodStart}~${periodEnd} 내 겹치는 ${toDelete.length}개 교체됨)` : ''}`);
   await loadUsageView();
 });
 
 let usageViewCache = [];
 async function loadUsageView() {
   if (!state.currentSeasonId) return;
-  const { data: raw, error } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'usage_month'));
+  const { data: raw, error } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'period_end'));
   if (error) { console.error(error); return; }
   usageViewCache = raw || [];
   renderUsageView();
