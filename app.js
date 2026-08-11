@@ -2719,7 +2719,7 @@ async function loadUsageView() {
   const { data: raw, error } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'period_end'));
   if (error) { console.error(error); return; }
   usageViewCache = raw || [];
-  renderUsageView();
+  await loadUsageAccumView();
   loadAndRenderUnclassifiedMaterials();
 }
 
@@ -2851,17 +2851,29 @@ async function applyUnclassifiedCandidate(code) {
   await loadUsageView();
 }
 
-function renderUsageView() {
+// "자재 누적 현황" — 시즌과 무관하게(season_id/시즌 범위 상관없이) 선택한 연월의 자재사용량 원본을 그대로 보여준다.
+// 시즌 전체를 다 훑으면(27만행+) 느려서, 항상 연월로 서버에서 직접 좁혀서 조회한다.
+let usageAccumCache = [];
+const USAGE_ACCUM_COLS = 'id, usage_month, period_start, period_end, store_name, material_name, remark, item_name, tax_status, stock_unit, conversion_factor, actual_usage_qty, actual_usage_amount';
+async function loadUsageAccumView() {
   const monthFilter = $('#usageViewMonthFilter').value; // "YYYY-MM"
-  const data = usageViewCache
-    .filter(r => !monthFilter || (r.usage_month || '').slice(0, 7) === monthFilter)
-    .slice()
+  if (!monthFilter) { usageAccumCache = []; renderUsageAccumView(); return; }
+  $('#usageViewBody').innerHTML = `<tr><td colspan="12" style="text-align:center;color:var(--muted)">불러오는 중...</td></tr>`;
+  const { data, error } = await fetchAllRows('material_usage', q => q.eq('usage_month', `${monthFilter}-01`), USAGE_ACCUM_COLS);
+  if (error) { console.error(error); return; }
+  usageAccumCache = data || [];
+  renderUsageAccumView();
+}
+
+function renderUsageAccumView() {
+  const data = usageAccumCache.slice()
     .sort((a, b) => (Number(b.actual_usage_amount) || 0) - (Number(a.actual_usage_amount) || 0));
   const body = $('#usageViewBody');
   body.innerHTML = (data || []).map(r => `
     <tr data-id="${r.id}">
       <td class="col-check"><input type="checkbox" class="row-check"></td>
       <td>${r.usage_month ? r.usage_month.slice(0, 7) : '-'}</td>
+      <td>${r.period_start && r.period_end ? `${r.period_start.slice(5)} ~ ${r.period_end.slice(5)}` : '-'}</td>
       <td>${r.store_name ?? '-'}</td>
       <td>${r.material_name ?? '-'}</td>
       <td>${r.remark ?? '-'}</td>
@@ -2875,7 +2887,13 @@ function renderUsageView() {
   `).join('') || `<tr><td colspan="12" style="text-align:center;color:var(--muted)">데이터가 없습니다.</td></tr>`;
 }
 
-$('#usageViewMonthFilter').addEventListener('change', renderUsageView);
+// 연월 기본값은 현재 달로 맞추고, 페이지 로드 시 바로 한 번 불러온다(시즌 선택과 무관하게 동작).
+(() => {
+  const now = new Date();
+  $('#usageViewMonthFilter').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+})();
+loadUsageAccumView();
+$('#usageViewMonthFilter').addEventListener('change', loadUsageAccumView);
 
 $('#usageSelectAll').addEventListener('change', (e) => {
   $$('#usageViewBody .row-check').forEach(cb => { cb.checked = e.target.checked; });
@@ -2889,7 +2907,7 @@ $('#bulkDeleteUsageBtn').addEventListener('click', async () => {
   if (error) { flash($('#usageBulkMsg'), '삭제 실패: ' + error.message, false); return; }
   $('#usageSelectAll').checked = false;
   flash($('#usageBulkMsg'), `${ids.length}개 삭제되었습니다.`);
-  await loadUsageView();
+  await loadUsageAccumView();
 });
 
 // =====================================================================

@@ -494,7 +494,7 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><h3>현재 시즌 누적 현황</h3></div>
+        <div class="card-head"><h3>자재 누적 현황</h3></div>
         <div class="bulk-actions-row">
           <span class="hint">연월</span>
           <input type="month" id="usageViewMonthFilter">
@@ -503,10 +503,15 @@
         </div>
         <div class="table-scroll">
           <table class="data-table wide-first" id="usageViewTable">
+            <colgroup>
+              <col style="width:3%"><col style="width:6%"><col style="width:10%"><col style="width:14%">
+              <col style="width:16%"><col style="width:7%"><col style="width:9%"><col style="width:6%">
+              <col style="width:6%"><col style="width:7%"><col style="width:8%"><col style="width:8%">
+            </colgroup>
             <thead>
               <tr>
                 <th class="col-check"><input type="checkbox" id="usageSelectAll"></th>
-                <th>연월</th><th>매장명</th><th>자재명</th><th>비고</th><th>품목</th><th>과세여부</th><th>재고단위</th><th>환산계수</th>
+                <th>연월</th><th>주차</th><th>매장명</th><th>자재명</th><th>비고</th><th>품목</th><th>과세여부</th><th>재고단위</th><th>환산계수</th>
                 <th>실사용량수량</th><th>실사용량금액</th>
               </tr>
             </thead>
@@ -639,6 +644,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608111900"></script>
+<script src="app.js?v=202608112000"></script>
 </body>
 </html>
