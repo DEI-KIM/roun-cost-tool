@@ -2432,6 +2432,13 @@ function lastYearKeyOfMonth(key) {
   return `${ky - 1}-${String(km).padStart(2, '0')}`;
 }
 function roundOrBlank(v, digits) { return v == null ? '' : Math.round(v * 10 ** digits) / 10 ** digits; }
+// SheetJS 무료판은 셀 배경색 쓰기를 지원하지 않아서(실제 테스트로 확인됨), 신호등 대신 값 앞에 이모지를 붙인다.
+function formatPctWithSignal(v) {
+  if (v === '' || v == null) return '';
+  const rounded = Math.round(v);
+  const signal = rounded >= 200 ? '🔴 ' : rounded <= 100 ? '🟢 ' : '';
+  return `${signal}${rounded}%`;
+}
 
 async function exportProduceExcel() {
   const btn = $('#exportProduceExcelBtn');
@@ -2515,14 +2522,15 @@ async function exportProduceExcel() {
       return b?.grams ? b.amount / b.grams : null;
     };
 
-    const aoa = [['품목', '', ...monthKeys.map(formatMonthLabelKorean)]];
+    const aoa = [['품목', '비고', ...monthKeys.map(formatMonthLabelKorean)]];
     sortedItems.forEach(item => {
       const targetRow = monthKeys.map(m => roundOrBlank(deriveTargetPrice(marketByItemMonth[item][m], marketByItemMonth[item][lastYearKeyOfMonth(m)]), 2));
       const marketRow = monthKeys.map(m => roundOrBlank(marketByItemMonth[item][m], 2));
       const directRow = monthKeys.map(m => roundOrBlank(priceOf(item, m, 'direct'), 2));
       const purchaseRow = monthKeys.map(m => roundOrBlank(priceOf(item, m, 'purchase'), 2));
-      const targetVsDirectRow = monthKeys.map((m, i) => (targetRow[i] !== '' && directRow[i] !== '') ? roundOrBlank(directRow[i] / targetRow[i] * 100, 1) : '');
-      const marketVsPurchaseRow = monthKeys.map((m, i) => (marketRow[i] !== '' && purchaseRow[i] !== '') ? roundOrBlank(purchaseRow[i] / marketRow[i] * 100, 1) : '');
+      // 200% 이상은 🔴, 100% 이하는 🟢 (셀 배경색을 못 쓰는 대신 이모지로 신호등 표시)
+      const targetVsDirectRow = monthKeys.map((m, i) => (targetRow[i] !== '' && directRow[i] !== '') ? formatPctWithSignal(directRow[i] / targetRow[i] * 100) : '');
+      const marketVsPurchaseRow = monthKeys.map((m, i) => (marketRow[i] !== '' && purchaseRow[i] !== '') ? formatPctWithSignal(purchaseRow[i] / marketRow[i] * 100) : '');
 
       aoa.push([item, '타겟단가', ...targetRow]);
       aoa.push(['', '시장단가', ...marketRow]);
