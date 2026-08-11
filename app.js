@@ -2677,29 +2677,40 @@ $('#saveUsageGridBtn').addEventListener('click', async () => {
   });
   if (!rows.length) { flash($('#usageSaveMsg'), '입력된 행이 없습니다.', false); return; }
 
-  // 비고/품목/과세여부는 자재코드(별칭 그룹 포함) 기준으로 과거 이력에서 자동으로 이어받는다.
-  const classificationByCode = await buildMaterialClassificationLookup();
-  rows.forEach(r => {
-    const cls = r.material_code ? classificationByCode.get(r.material_code) : null;
-    r.remark = cls?.remark ?? null;
-    r.item_name = cls?.item_name ?? null;
-    r.tax_status = cls?.tax_status ?? null;
-  });
+  const btn = $('#saveUsageGridBtn');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '저장 중...';
+  try {
+    // 비고/품목/과세여부는 자재코드(별칭 그룹 포함) 기준으로 과거 이력에서 자동으로 이어받는다.
+    // 이번에 저장하는 자재코드만 조회 범위로 좁혀서(전체 이력을 다 훑지 않도록) 속도를 확보한다.
+    const codesOfInterest = [...new Set(rows.map(r => r.material_code).filter(Boolean))];
+    const classificationByCode = await buildMaterialClassificationLookup(codesOfInterest);
+    rows.forEach(r => {
+      const cls = r.material_code ? classificationByCode.get(r.material_code) : null;
+      r.remark = cls?.remark ?? null;
+      r.item_name = cls?.item_name ?? null;
+      r.tax_status = cls?.tax_status ?? null;
+    });
 
-  // 같은 주차(period_start~period_end)에 매장+자재 조합이 이미 있으면 이전 값을 지우고 새 값으로 교체
-  // (다른 주차 데이터는 그대로 유지 — 한 달에 여러 주를 나눠 저장해도 서로 지우지 않는다)
-  const keys = new Set(rows.map(r => `${r.store_code}||${r.material_code}`));
-  const { data: existing } = await fetchAllRows('material_usage',
-    q => q.eq('period_start', periodStart).eq('period_end', periodEnd), 'id, store_code, material_code');
-  const toDelete = (existing || []).filter(e => keys.has(`${e.store_code}||${e.material_code}`)).map(e => e.id);
-  if (toDelete.length) await deleteInChunks('material_usage', toDelete);
+    // 같은 주차(period_start~period_end)에 매장+자재 조합이 이미 있으면 이전 값을 지우고 새 값으로 교체
+    // (다른 주차 데이터는 그대로 유지 — 한 달에 여러 주를 나눠 저장해도 서로 지우지 않는다)
+    const keys = new Set(rows.map(r => `${r.store_code}||${r.material_code}`));
+    const { data: existing } = await fetchAllRows('material_usage',
+      q => q.eq('period_start', periodStart).eq('period_end', periodEnd), 'id, store_code, material_code');
+    const toDelete = (existing || []).filter(e => keys.has(`${e.store_code}||${e.material_code}`)).map(e => e.id);
+    if (toDelete.length) await deleteInChunks('material_usage', toDelete);
 
-  const { error } = await sb.from('material_usage').insert(rows);
-  if (error) { flash($('#usageSaveMsg'), '저장 실패: ' + error.message, false); return; }
-  usageGridBody.innerHTML = '';
-  for (let i = 0; i < 3; i++) addUsageRow();
-  flash($('#usageSaveMsg'), `${rows.length}개 행이 저장되었습니다.${toDelete.length ? ` (${periodStart}~${periodEnd} 내 겹치는 ${toDelete.length}개 교체됨)` : ''}`);
-  await loadUsageView();
+    const { error } = await sb.from('material_usage').insert(rows);
+    if (error) { flash($('#usageSaveMsg'), '저장 실패: ' + error.message, false); return; }
+    usageGridBody.innerHTML = '';
+    for (let i = 0; i < 3; i++) addUsageRow();
+    flash($('#usageSaveMsg'), `${rows.length}개 행이 저장되었습니다.${toDelete.length ? ` (${periodStart}~${periodEnd} 내 겹치는 ${toDelete.length}개 교체됨)` : ''}`);
+    await loadUsageView();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
 });
 
 let usageViewCache = [];
@@ -2714,15 +2725,50 @@ async function loadUsageView() {
 
 // 자재코드(별칭 그룹) 기준으로, remark가 한 번이라도 채워진 적 있는 자재의 분류를 모아 lookup을 만든다.
 // 저장 시 이 lookup으로 비고/품목/과세여부를 자동으로 채운다 — 매번 다시 입력할 필요가 없어짐.
-async function buildMaterialClassificationLookup() {
-  const [{ data: usageRows }, aliasRes] = await Promise.all([
-    fetchAllRows('material_usage', q => q.not('remark', 'is', null), 'material_code, remark, item_name, tax_status'),
-    sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
-  ]);
+// codesOfInterest를 주면 그 자재코드(+별칭 그룹)만 조회한다 — 자재사용량이 대량으로 쌓인 뒤로는 흔한 자재
+// 하나가 수백~수천 행에 걸쳐 있어서, 코드로만 좁혀도(.in) 여전히 수만 행을 읽어와 1분 넘게 걸렸다
+// (저장 버튼이 멈춘 것처럼 보인 원인). 코드마다 "분류값 있는 행 1개"만 병렬로 조회하면 충분하다 —
+// 같은 코드의 모든 행은 어차피 같은 분류를 쓰므로. 미분류 자재 후보 매칭처럼 전체 풀이 필요한 경우엔
+// codesOfInterest를 생략해 기존처럼 전체를 스캔한다.
+async function buildMaterialClassificationLookup(codesOfInterest) {
+  const aliasRes = await sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed');
   const parent = new Map();
   const find = (x) => { if (!parent.has(x)) parent.set(x, x); while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
   const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
   (aliasRes.data || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
+
+  let usageRows;
+  if (codesOfInterest && codesOfInterest.length) {
+    // 별칭 그룹 멤버(같은 대표 코드로 묶인 다른 자재코드들)까지 포함해서 조회 범위를 넓힌다 —
+    // 저장하려는 코드 자체엔 분류 이력이 없어도, 별칭으로 묶인 다른 코드에 이력이 있을 수 있다.
+    const groupMembers = new Map(); // 대표코드 -> Set(그 그룹의 모든 코드)
+    (aliasRes.data || []).forEach(a => {
+      [a.primary_material_code, a.alt_material_code].forEach(code => {
+        const r = find(code);
+        if (!groupMembers.has(r)) groupMembers.set(r, new Set());
+        groupMembers.get(r).add(code);
+      });
+    });
+    const expanded = new Set();
+    codesOfInterest.forEach(code => {
+      expanded.add(code);
+      (groupMembers.get(find(code)) || []).forEach(c => expanded.add(c));
+    });
+    const codeList = [...expanded];
+    usageRows = [];
+    const chunkSize = 20;
+    for (let i = 0; i < codeList.length; i += chunkSize) {
+      const chunk = codeList.slice(i, i + chunkSize);
+      const results = await Promise.all(chunk.map(code =>
+        sb.from('material_usage').select('material_code, remark, item_name, tax_status')
+          .eq('material_code', code).not('remark', 'is', null).limit(1)
+      ));
+      results.forEach(r => { if (r.data && r.data[0]) usageRows.push(r.data[0]); });
+    }
+  } else {
+    const res = await fetchAllRows('material_usage', q => q.not('remark', 'is', null), 'material_code, remark, item_name, tax_status');
+    usageRows = res.data;
+  }
 
   const classificationByGroup = new Map(); // 별칭그룹 대표코드 -> {remark, item_name, tax_status}
   (usageRows || []).forEach(r => {
