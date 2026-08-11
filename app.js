@@ -22,7 +22,8 @@ async function fetchAllRows(table, applyFilters, selectCols = '*') {
   while (true) {
     let q = sb.from(table).select(selectCols);
     if (applyFilters) q = applyFilters(q);
-    const { data, error } = await q.range(from, from + pageSize - 1);
+    // stable tiebreaker so .range() pages don't return duplicate/missing rows on tables past 1000 rows
+    const { data, error } = await q.order('id', { ascending: true }).range(from, from + pageSize - 1);
     if (error) return { data: null, error };
     all = all.concat(data || []);
     if (!data || data.length < pageSize) break;
