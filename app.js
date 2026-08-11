@@ -1053,18 +1053,23 @@ async function loadMenuConsumptionView() {
   const consumptionByMenu = Object.fromEntries((consumption || []).map(c => [c.menu_name, c]));
   const seasonName = state.seasons.find(s => s.id === state.currentSeasonId)?.name ?? '-';
 
+  const targetPrice = state.seasonTarget?.target_price_per_person ?? null;
   menuConsumptionRowsCache = [...byMenu.values()].map(m => {
     const c = consumptionByMenu[m.menu_name];
     const consumptionPerPerson = c?.consumption_per_person ?? null;
     const actualCostPerGram = c?.actual_cost_per_gram ?? null;
     const effectiveCostPerGram = actualCostPerGram ?? m.cost_per_gram;
     const value = (effectiveCostPerGram != null && consumptionPerPerson != null) ? effectiveCostPerGram * consumptionPerPerson : null;
+    // 원가율은 메뉴마다 운영패턴(상시/디너·주말/주말)이 달라 손님 수 분모가 다르므로, consumption_per_person이 아니라
+    // 시즌 전체 손님 수 기준으로 통일한 consumption_per_person_brand로 계산해야 메뉴 간 비교가 정확하다
+    // (그렇지 않으면 주말·디너 한정 메뉴의 원가율이 실제보다 부풀려져 보인다 — 카테고리 실적 합산 때와 같은 이유).
+    const costRatio = computeCostRatio(effectiveCostPerGram, c?.consumption_per_person_brand ?? null, targetPrice);
     return {
       menu_name: m.menu_name, category: m.category, cost_per_gram: m.cost_per_gram,
       actual_cost_per_gram: actualCostPerGram, cost_source: c?.cost_source ?? null, cost_month: c?.cost_month ?? null,
       consumption_per_person: consumptionPerPerson,
       consumption_per_person_excl_water: c?.consumption_per_person_excl_water ?? null,
-      value, seasonName,
+      value, cost_ratio: costRatio, seasonName,
       consumption_source: c?.consumption_source ?? null, confidence: c?.confidence ?? null,
     };
   });
@@ -1115,8 +1120,9 @@ function renderMenuConsumptionView() {
       <td>${fmtWithExclWater(m.consumption_per_person, m.consumption_per_person_excl_water, 1)}</td>
       <td>${badge}</td>
       <td>${m.value != null ? fmtNum(m.value, 0) : '-'}</td>
+      <td>${m.cost_ratio != null ? m.cost_ratio.toFixed(1) + '%' : '-'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--muted)">설계원가 탭에 저장된 메뉴가 없습니다.</td></tr>`;
+  }).join('') || `<tr><td colspan="9" style="text-align:center;color:var(--muted)">설계원가 탭에 저장된 메뉴가 없습니다.</td></tr>`;
 }
 
 $('#menuConsumptionSortSelect').addEventListener('change', renderMenuConsumptionView);
@@ -2074,6 +2080,7 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
       season_id: state.currentSeasonId, menu_name: r.menu_name,
       consumption_per_person: r.consumption_per_person,
       consumption_per_person_excl_water: r.consumption_per_person_excl_water,
+      consumption_per_person_brand: r.consumption_per_person_brand,
       consumption_source: r.consumption_source, confidence: r.confidence,
     }));
     if (upserts.length) {
