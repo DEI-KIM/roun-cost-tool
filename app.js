@@ -2374,7 +2374,7 @@ function renderProduceChart(months, targetSeries, directSeries, purchaseSeries, 
   if (!wrap || !months.length) { if (wrap) wrap.innerHTML = `<div class="chart-empty">데이터가 없습니다.</div>`; return; }
   const seriesDefs = [
     { label: '목표단가', color: 'var(--good)', values: targetSeries },
-    { label: '로운(직송)', color: 'var(--chart-2)', values: directSeries },
+    { label: '로운(직송)', color: 'var(--accent)', values: directSeries },
     { label: '로운(구매)', color: 'var(--ink)', values: purchaseSeries },
     { label: '시장단가', color: 'var(--warn)', values: marketSeries },
   ];
@@ -2483,15 +2483,25 @@ async function exportProduceExcel() {
       marketByItemMonth[item] = byMonth;
     });
 
-    // 월 범위: 실사용 데이터가 있는 가장 이른 달 ~ (가장 최근 달을 그 해 12월까지 연장 — 미래월은 타겟단가 투사용)
+    // 월 범위: 실사용+시장데이터를 통틀어 가장 이른 달(시장데이터가 사용량보다 먼저 시작하는 경우가 많음)
+    // ~ 가장 최근 달을 그 해 12월까지 연장(미래월은 타겟단가 투사용)
+    const allMonths = new Set();
+    items.forEach(item => {
+      Object.keys(usageByItemMonth[item]).forEach(m => allMonths.add(m));
+      Object.keys(marketByItemMonth[item]).forEach(m => allMonths.add(m));
+    });
+    const sortedAllMonths = [...allMonths].sort();
+    const firstMonth = sortedAllMonths[0];
+    const lastActualMonth = sortedAllMonths[sortedAllMonths.length - 1];
+    const [lastY] = lastActualMonth.split('-').map(Number);
+    const endMonth = `${lastY}-12`;
+    const monthKeys = monthRangeInclusive(firstMonth, endMonth);
+
+    // 정렬 기준(최근월 사용액)은 실사용 데이터가 있는 가장 최근 달로 별도 계산 — 시장데이터만 있는 달로는 사용액 비교가 안 됨
     const allUsageMonths = new Set();
     items.forEach(item => Object.keys(usageByItemMonth[item]).forEach(m => allUsageMonths.add(m)));
     const sortedUsageMonths = [...allUsageMonths].sort();
-    const firstMonth = sortedUsageMonths[0];
     const lastUsageMonth = sortedUsageMonths[sortedUsageMonths.length - 1];
-    const [lastY] = lastUsageMonth.split('-').map(Number);
-    const endMonth = `${lastY}-12`;
-    const monthKeys = monthRangeInclusive(firstMonth, endMonth);
 
     // 품목 정렬: 가장 최근월(lastUsageMonth) 사용액(직송+구매) 많은 순
     const usageAtLastMonth = (item) => {
