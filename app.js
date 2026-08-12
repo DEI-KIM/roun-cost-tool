@@ -17,30 +17,28 @@ async function deleteInChunks(table, ids, chunkSize = 200) {
 // PostgREST caps a single request at 1000 rows by default; page through until exhausted.
 async function fetchAllRows(table, applyFilters, selectCols = '*') {
   const pageSize = 1000;
-  const buildQuery = (withCount) => {
-    let q = sb.from(table).select(selectCols, withCount ? { count: 'exact' } : undefined);
+  const CONCURRENCY = 8;
+  const buildQuery = (from) => {
+    let q = sb.from(table).select(selectCols);
     if (applyFilters) q = applyFilters(q);
     // stable tiebreaker so .range() pages don't return duplicate/missing rows on tables past 1000 rows
-    return q.order('id', { ascending: true });
+    return q.order('id', { ascending: true }).range(from, from + pageSize - 1);
   };
-  const { data: firstPage, error: firstErr, count } = await buildQuery(true).range(0, pageSize - 1);
-  if (firstErr) return { data: null, error: firstErr };
-  let all = firstPage || [];
-  // 총 개수를 알면 남은 페이지들을 병렬로 가져온다(순차 대기 없이) — 큰 표(예: 자재사용량)에서 효과 큼.
-  // 단, 한꺼번에 수백 개를 다 쏘면(예: market_prices 30만행) 브라우저 연결이 몰려 오히려 다른 요청이 굶는다 —
-  // CONCURRENCY만큼씩 묶어서 처리.
-  const CONCURRENCY = 8;
-  if (typeof count === 'number' && all.length >= pageSize && all.length < count) {
-    const pageFroms = [];
-    for (let from = pageSize; from < count; from += pageSize) pageFroms.push(from);
-    for (let i = 0; i < pageFroms.length; i += CONCURRENCY) {
-      const batch = pageFroms.slice(i, i + CONCURRENCY);
-      const rest = await Promise.all(batch.map(from => buildQuery(false).range(from, from + pageSize - 1)));
-      for (const r of rest) {
-        if (r.error) return { data: null, error: r.error };
-        all = all.concat(r.data || []);
-      }
+  // count(*)는 큰 표에서 statement timeout을 낼 수 있어 쓰지 않는다 — 대신 한 배치(CONCURRENCY개 페이지)를
+  // 병렬로 미리 쏴보고, 배치 안에 꽉 안 찬 페이지가 하나라도 있으면 그 뒤로 더 없다고 보고 멈춘다.
+  let all = [];
+  let from = 0;
+  let done = false;
+  while (!done) {
+    const pageFroms = Array.from({ length: CONCURRENCY }, (_, i) => from + i * pageSize);
+    const results = await Promise.all(pageFroms.map(f => buildQuery(f)));
+    for (const r of results) {
+      if (r.error) return { data: null, error: r.error };
+      const rows = r.data || [];
+      all = all.concat(rows);
+      if (rows.length < pageSize) done = true;
     }
+    from += CONCURRENCY * pageSize;
   }
   return { data: all, error: null };
 }
