@@ -3469,7 +3469,9 @@ function renderPivotCompare() {
 
   const mode = $('#pivotModeSelect').value;
   const allCodes = data.stores.map(s => s.code);
-  const regularCodes = data.stores.filter(s => s.type === 'regular').map(s => s.code);
+  // "일반"(storeType 기준 199-229가 아닌 매장) 중에서, 매장명에 "프리미엄"이 들어가면 프리미엄으로 따로 뺀다.
+  const premiumCodes = data.stores.filter(s => s.type === 'regular' && (s.name || '').includes('프리미엄')).map(s => s.code);
+  const regularCodes = data.stores.filter(s => s.type === 'regular' && !(s.name || '').includes('프리미엄')).map(s => s.code);
   const valueCodes = data.stores.filter(s => s.type === 'value').map(s => s.code);
 
   let columns;
@@ -3478,6 +3480,7 @@ function renderPivotCompare() {
     const selStore = data.stores.find(s => s.code === selCode);
     columns = [
       { key: 'brand', label: '브랜드', codes: allCodes, brand: true },
+      { key: 'premium', label: '프리미엄', codes: premiumCodes },
       { key: 'regular', label: '일반', codes: regularCodes },
       { key: 'value', label: '199-229', codes: valueCodes },
     ];
