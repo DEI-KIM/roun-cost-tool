@@ -17,7 +17,9 @@ async function deleteInChunks(table, ids, chunkSize = 200) {
 // PostgREST caps a single request at 1000 rows by default; page through until exhausted.
 async function fetchAllRows(table, applyFilters, selectCols = '*') {
   const pageSize = 1000;
-  const CONCURRENCY = 8;
+  // 피벗 탭처럼 fetchAllRows를 여러 개 동시에(Promise.all) 부르는 곳이 있어서, 여기서도 너무 크게 잡으면
+  // 한 화면 로드에서 수십 개 요청이 한꺼번에 몰려 일부가 실패/지연될 수 있다 — 4로 낮춰서 여유를 둠.
+  const CONCURRENCY = 4;
   const buildQuery = (from) => {
     let q = sb.from(table).select(selectCols);
     if (applyFilters) q = applyFilters(q);
@@ -3409,6 +3411,8 @@ async function loadPivotCompareData() {
   ]);
   if (consumption.error) return { error: consumption.error };
   if (costResult.error) return { error: costResult.error };
+  if (designsRes.error) return { error: designsRes.error.message || String(designsRes.error) };
+  if (salesRes.error) return { error: salesRes.error.message || String(salesRes.error) };
 
   const designByMenu = new Map();
   (designsRes.data || []).forEach(d => { if (d.menu_name) designByMenu.set(d.menu_name, d); });
