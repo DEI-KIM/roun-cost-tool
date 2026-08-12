@@ -3342,7 +3342,7 @@ function setPivotTab(t) {
   $('#pivotResetOrderBtn').style.display = t === 'B' ? '' : 'none';
   if (t === 'A' || t === 'B') loadPivotCompareView();
   if (t === 'C') loadPivotTimeSeriesView();
-  // TODO(다음 단계): loadPivotVEView 연결
+  if (t === 'D') loadPivotVEView();
 }
 $$('.pivot-tab-btn').forEach(btn => {
   btn.addEventListener('click', () => setPivotTab(btn.dataset.pivotTab));
@@ -3827,6 +3827,197 @@ $('#pivotTsTargetSelect').addEventListener('change', loadPivotTimeSeriesView);
 $('#pivotTsUnitSelect').addEventListener('change', loadPivotTimeSeriesView);
 $('#pivotTsFromSelect').addEventListener('change', loadPivotTimeSeriesView);
 $('#pivotTsModeSelect').addEventListener('change', renderPivotTimeSeries);
+
+// ---------- ④ VE (AS-IS→TO-BE) ----------
+// 대상: 메뉴 진단 탭의 "즉시" 긴급도 메뉴(computeUrgencyTiers, 상위 10%) — 그대로 재사용.
+// AS-IS 취식g/객은 menu_consumption.consumption_per_person_brand를 쓴다(시즌 전체 손님수 기준으로
+// 통일한 값) — 메뉴별 원래 consumption_per_person을 쓰면 디너/주말 한정 메뉴가 브랜드 원가율 영향력을
+// 과대평가받는다(이번 세션 초반 브랜드 실적 원가율 31%→37% 오류의 원인과 동일한 함정).
+const VE_PHASES = ['즉시', '자재 소진 후', '가을 시즌', '확인 중'];
+let veFactsCache = null;
+let vePlanCache = [];
+
+async function buildVeFacts() {
+  const urgentRows = (menuDiagnosisCache.diagRows || []).filter(r => r.tier === '즉시');
+  if (!urgentRows.length) return null;
+  const urgentNames = urgentRows.map(r => r.menu_name);
+  const { data: consRows } = await fetchAllRows(
+    'menu_consumption',
+    q => q.eq('season_id', state.currentSeasonId).in('menu_name', urgentNames),
+    'menu_name, consumption_per_person_brand, actual_cost_per_gram'
+  );
+  const consByMenu = new Map((consRows || []).map(r => [r.menu_name, r]));
+  const designByMenu = new Map(menuConsumptionRowsCache.map(r => [r.menu_name, r]));
+
+  const items = urgentRows.map(u => {
+    const cons = consByMenu.get(u.menu_name);
+    const design = designByMenu.get(u.menu_name);
+    const wpg = cons?.actual_cost_per_gram ?? design?.cost_per_gram ?? null;
+    const g = cons?.consumption_per_person_brand ?? null;
+    return { menu_name: u.menu_name, zone: u.category, wpg, g, won: (wpg != null && g != null) ? wpg * g : null };
+  });
+
+  const t = state.seasonTarget;
+  const targetPrice = t?.target_price_per_person ?? null;
+  const targetTotals = weightedTotals(state.categorySummary, 'target');
+  const targetRatio = computeCostRatio(targetTotals.costPerGram, targetTotals.consumption, targetPrice);
+  const rate = t?.actual_cost_ratio_brand ?? null;
+  const netPricePerPerson = t?.actual_price_per_person ? t.actual_price_per_person / 1.1 : null;
+
+  const byCategory = Object.fromEntries(state.categorySummary.map(r => [r.category, r]));
+  const zones = DASHBOARD_CATEGORIES.map(cat => {
+    const r = byCategory[cat] || {};
+    const actual = (r.actual_cost_per_gram != null && r.actual_consumption_per_person != null)
+      ? r.actual_cost_per_gram * r.actual_consumption_per_person : null;
+    const target = (r.target_cost_per_gram != null && r.target_consumption_per_person != null)
+      ? r.target_cost_per_gram * r.target_consumption_per_person : null;
+    return { zone: cat, actual, target, gap: (actual != null && target != null) ? actual - target : null };
+  });
+
+  return { items, rate, targetRatio, netPricePerPerson, zones };
+}
+
+function computeVE() {
+  const F = veFactsCache;
+  if (!F) return null;
+  const planByMenu = new Map(vePlanCache.map(p => [p.menu_name, p]));
+
+  const rows = F.items.map(it => {
+    const p = planByMenu.get(it.menu_name) || {};
+    if (it.wpg == null || it.g == null) {
+      return {
+        menu_name: it.menu_name, zone: it.zone, asis_wpg: it.wpg, asis_g: it.g, asis_won: it.won,
+        in_wpg: null, in_g: null, tobe_wpg: null, tobe_g: null, tobe_won: null, d_won: null, d_pp: null,
+        phase: p.phase || '확인 중', action_plan: p.action_plan || '', note: 'AS-IS 산출불가 — 자재사용량 데이터 부족',
+      };
+    }
+    const inWpg = (p.tb_cost_per_gram != null && p.tb_cost_per_gram !== '') ? Number(p.tb_cost_per_gram) : null;
+    const inG = (p.tb_consumption != null && p.tb_consumption !== '') ? Number(p.tb_consumption) : null;
+    const tobeWpg = inWpg ?? it.wpg;
+    const tobeG = inG ?? it.g;
+    const tobeWon = tobeWpg * tobeG;
+    const dWon = tobeWon - it.won;
+    const dPp = F.netPricePerPerson ? dWon / F.netPricePerPerson * 100 : null;
+    return {
+      menu_name: it.menu_name, zone: it.zone, asis_wpg: it.wpg, asis_g: it.g, asis_won: it.won,
+      in_wpg: inWpg, in_g: inG, tobe_wpg: tobeWpg, tobe_g: tobeG, tobe_won: tobeWon, d_won: dWon, d_pp: dPp,
+      phase: p.phase || '확인 중', action_plan: p.action_plan || '',
+      note: (inWpg == null && inG == null) ? 'TO-BE 미입력 — 효과 0' : '',
+    };
+  });
+  rows.sort((a, b) => (a.d_won ?? 0) - (b.d_won ?? 0));
+
+  const eff = rows.filter(r => r.d_won != null);
+  const totWon = eff.reduce((s, r) => s + r.d_won, 0);
+  const totPp = F.netPricePerPerson ? totWon / F.netPricePerPerson * 100 : null;
+
+  const phaseAgg = {};
+  eff.forEach(r => { const k = VE_PHASES.includes(r.phase) ? r.phase : '확인 중'; phaseAgg[k] = (phaseAgg[k] || 0) + r.d_won; });
+  let acc = 0;
+  const phases = VE_PHASES.map(ph => {
+    acc += (phaseAgg[ph] || 0);
+    const cumPp = F.netPricePerPerson ? acc / F.netPricePerPerson * 100 : null;
+    return { phase: ph, d: phaseAgg[ph] || 0, cum: acc, rate: (F.rate != null && cumPp != null) ? F.rate + cumPp : null };
+  });
+
+  const zoneDelta = {};
+  eff.forEach(r => { zoneDelta[r.zone] = (zoneDelta[r.zone] || 0) + r.d_won; });
+  const zones = F.zones.map(z => ({
+    ...z, d: zoneDelta[z.zone] || 0,
+    gap2: z.gap != null ? z.gap + (zoneDelta[z.zone] || 0) : null,
+  }));
+
+  return {
+    rows, zones, phases,
+    total: { d_won: totWon, d_pp: totPp, rate_after: (F.rate != null && totPp != null) ? F.rate + totPp : null },
+    rate: F.rate, targetRatio: F.targetRatio,
+  };
+}
+
+function renderVE() {
+  const tbl = $('#pivotTable');
+  const F = veFactsCache;
+  if (!F) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">"즉시" 긴급도 메뉴가 없습니다 (메뉴 진단 탭 기준).</td></tr></tbody>'; return; }
+  const V = computeVE();
+  const won = v => v == null ? '—' : Math.round(v).toLocaleString();
+  const f1v = v => v == null ? '—' : (Math.round(v * 10) / 10).toLocaleString();
+  const f2v = v => v == null ? '—' : (Math.round(v * 100) / 100).toLocaleString();
+  const sgn = (v, n) => v == null ? '—' : (v > 0 ? '+' : '') + (Math.round(v * Math.pow(10, n)) / Math.pow(10, n)).toLocaleString(undefined, { minimumFractionDigits: n, maximumFractionDigits: n });
+  const cl = v => v == null ? '' : (v < 0 ? 'pivot-ve-good' : (v > 0 ? 'pivot-ve-bad' : ''));
+  // onchange="veSet('...')" 안에 그대로 들어가는 문자열 — HTML 속성 경계(", &)와 JS 문자열 리터럴 경계(')를
+  // 각각 올바른 방식으로 이스케이프해야 한다(HTML 엔티티로 '를 escape해도 브라우저가 속성을 디코딩한 뒤
+  // JS로 넘기므로 소용없음 — 반드시 백슬래시 JS escape를 써야 함).
+  const qesc = s => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  const num = (menu, field, v) => `<input class="pivot-ve-in" type="number" step="0.01" value="${v == null ? '' : v}" onchange="veSet('${qesc(menu)}','${field}',this.value)">`;
+  const sel = (menu, v) => `<select class="pivot-ve-in" onchange="veSet('${qesc(menu)}','phase',this.value)">` +
+    VE_PHASES.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('') + `</select>`;
+  const txt = (menu, v) => `<input class="pivot-ve-in pivot-ve-wide" value="${esc(v || '').replace(/"/g, '&quot;')}" onchange="veSet('${qesc(menu)}','action_plan',this.value)">`;
+
+  let H = `<thead><tr><th colspan="12" style="text-align:left;background:var(--accent-soft)">` +
+    `<span class="pivot-vek">VE 합계 <b class="${cl(V.total.d_won)}">${sgn(V.total.d_won, 0)}원/객</b></span>` +
+    `<span class="pivot-vek">원가율 <b class="${cl(V.total.d_pp)}">${sgn(V.total.d_pp, 2)}%p</b></span>` +
+    `<span class="pivot-vek">현재 <b>${V.rate != null ? V.rate.toFixed(2) : '—'}%</b> → VE 후 <b>${V.total.rate_after != null ? V.total.rate_after.toFixed(2) : '—'}%</b></span>` +
+    (V.targetRatio != null && V.total.rate_after != null ? `<span class="pivot-vek">타겟 ${V.targetRatio.toFixed(1)}%까지 <b class="pivot-ve-bad">${sgn(V.total.rate_after - V.targetRatio, 2)}%p</b></span>` : '') +
+    `</th></tr><tr><th>대상</th><th>존</th><th>AS-IS 원/g</th><th>취식 g/객</th><th>AS-IS 원/객</th>` +
+    `<th>TO-BE 원/g</th><th>TO-BE 취식g</th><th>TO-BE 원/객</th><th>Δ원/객</th><th>Δ%p</th><th>시점</th><th style="text-align:left">해결 방안</th></tr></thead><tbody>`;
+
+  V.rows.forEach(r => {
+    H += `<tr class="pivot-menu"><td style="text-align:left">${esc(r.menu_name)}${r.note ? `<br><span class="pivot-ref">${esc(r.note)}</span>` : ''}</td>` +
+      `<td style="text-align:left">${esc(r.zone)}</td>` +
+      `<td>${f2v(r.asis_wpg)}</td><td>${f1v(r.asis_g)}</td><td>${won(r.asis_won)}</td>` +
+      `<td>${num(r.menu_name, 'tb_cost_per_gram', r.in_wpg)}</td>` +
+      `<td>${num(r.menu_name, 'tb_consumption', r.in_g)}</td>` +
+      `<td>${won(r.tobe_won)}</td>` +
+      `<td class="${cl(r.d_won)}">${sgn(r.d_won, 0)}</td><td class="${cl(r.d_pp)}">${sgn(r.d_pp, 3)}</td>` +
+      `<td>${sel(r.menu_name, r.phase)}</td>` +
+      `<td style="text-align:left">${txt(r.menu_name, r.action_plan)}</td></tr>`;
+  });
+
+  H += `<tr class="pivot-zone"><td colspan="12" style="text-align:left">【시점별 누적 — 언제 얼마가 떨어지나】</td></tr>`;
+  V.phases.forEach(c => {
+    H += `<tr class="pivot-item"><td style="text-align:left">${esc(c.phase)}</td>` +
+      `<td colspan="7" style="text-align:left" class="pivot-ref">그 시점 효과</td>` +
+      `<td class="${cl(c.d)}">${sgn(c.d, 0)}</td>` +
+      `<td colspan="2" style="text-align:left">누적 <b class="${cl(c.cum)}">${sgn(c.cum, 0)}원/객</b> → 원가율 <b>${c.rate != null ? c.rate.toFixed(2) : '—'}%</b></td></tr>`;
+  });
+  H += `<tr class="pivot-zone"><td colspan="12" style="text-align:left">【존별 — 타겟 갭이 얼마나 좁혀지나】</td></tr>`;
+  V.zones.forEach(z => {
+    H += `<tr class="pivot-item"><td style="text-align:left">${esc(z.zone)}</td>` +
+      `<td colspan="3" style="text-align:left" class="pivot-ref">실적 ${won(z.actual)} / 타겟 ${won(z.target)} 원/객</td>` +
+      `<td class="${cl(z.gap)}">${sgn(z.gap, 0)}</td>` +
+      `<td colspan="2" style="text-align:left" class="pivot-ref">현재 갭</td>` +
+      `<td class="${cl(z.d)}">${sgn(z.d, 0)}</td>` +
+      `<td colspan="2" style="text-align:left">VE 후 갭 <b class="${cl(z.gap2)}">${sgn(z.gap2, 0)}원/객</b></td></tr>`;
+  });
+  H += '</tbody>';
+  tbl.innerHTML = H;
+}
+
+async function veSet(menuName, field, value) {
+  const numericFields = field === 'tb_cost_per_gram' || field === 'tb_consumption';
+  const payloadValue = numericFields ? (value === '' ? null : Number(value)) : value;
+  const existing = vePlanCache.find(p => p.menu_name === menuName);
+  if (existing) existing[field] = payloadValue;
+  else vePlanCache.push({ menu_name: menuName, phase: '확인 중', action_plan: '', [field]: payloadValue });
+  renderVE(); // 저장 기다리지 않고 화면부터 즉시 재계산
+  const row = vePlanCache.find(p => p.menu_name === menuName);
+  const { error } = await sb.from('ve_plan').upsert(
+    { menu_name: row.menu_name, tb_cost_per_gram: row.tb_cost_per_gram ?? null, tb_consumption: row.tb_consumption ?? null,
+      phase: row.phase || '확인 중', action_plan: row.action_plan || null },
+    { onConflict: 'menu_name' }
+  );
+  if (error) alert('저장 실패: ' + error.message);
+}
+
+async function loadPivotVEView() {
+  const tbl = $('#pivotTable');
+  tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>';
+  veFactsCache = await buildVeFacts();
+  const { data, error } = await sb.from('ve_plan').select('*');
+  if (error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(error.message)}</td></tr></tbody>`; return; }
+  vePlanCache = data || [];
+  renderVE();
+}
 
 // ---------- Start ----------
 initAuth();
