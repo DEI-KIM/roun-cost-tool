@@ -262,7 +262,89 @@ function renderSeasonRangeInputs() {
   $('#seasonEndMonth').value = season?.end_month || '';
 }
 
+// 시즌 범위 날짜 선택 — 재고실사 주기(매주 월요일 + 매달 말일)에 안 맞는 날짜를 실수로 고르면
+// 자재사용량(주 단위)과 매출(일 단위)의 반영 구간이 어긋나서 실적이 왜곡된다(2026-08-12 발견 사례).
+// EATS 시스템의 날짜 선택 화면처럼, 유효한 날짜만 클릭 가능한 팝업 달력으로 원천 차단한다.
+function isSeasonCutoffDate(d) {
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  return d.getDay() === 1 || d.getDate() === lastDay; // 월요일 또는 말일
+}
+let seasonDatePickerState = null;
+function closeSeasonDatePicker() {
+  $('#seasonDatePopup').style.display = 'none';
+  document.removeEventListener('click', handleSeasonDatePickerOutsideClick, true);
+  seasonDatePickerState = null;
+}
+function handleSeasonDatePickerOutsideClick(e) {
+  const popup = $('#seasonDatePopup');
+  if (seasonDatePickerState && !popup.contains(e.target) && e.target !== seasonDatePickerState.targetInput) {
+    closeSeasonDatePicker();
+  }
+}
+function renderSeasonDatePickerCalendar() {
+  const { viewYear, viewMonth, targetInput } = seasonDatePickerState;
+  const selectedStr = targetInput.value;
+  const firstWeekday = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const dow = ['일', '월', '화', '수', '목', '금', '토'];
+  let html = `
+    <div class="date-popup-header">
+      <button type="button" class="date-popup-nav" data-nav="-1">‹</button>
+      <span>${viewYear}년 ${viewMonth + 1}월</span>
+      <button type="button" class="date-popup-nav" data-nav="1">›</button>
+    </div>
+    <div class="date-popup-grid date-popup-dow">${dow.map(d => `<span>${d}</span>`).join('')}</div>
+    <div class="date-popup-grid">`;
+  for (let i = 0; i < firstWeekday; i++) html += `<span></span>`;
+  for (let day = 1; day <= daysInMonth; day++) {
+    const d = new Date(viewYear, viewMonth, day);
+    const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const valid = isSeasonCutoffDate(d);
+    const cls = ['date-popup-day'];
+    if (!valid) cls.push('is-disabled');
+    if (dateStr === selectedStr) cls.push('is-selected');
+    html += `<button type="button" class="${cls.join(' ')}" ${valid ? `data-date="${dateStr}"` : 'disabled'}>${day}</button>`;
+  }
+  html += `</div>`;
+  const popup = $('#seasonDatePopup');
+  popup.innerHTML = html;
+  $$('.date-popup-nav', popup).forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      seasonDatePickerState.viewMonth += Number(btn.dataset.nav);
+      if (seasonDatePickerState.viewMonth < 0) { seasonDatePickerState.viewMonth = 11; seasonDatePickerState.viewYear--; }
+      if (seasonDatePickerState.viewMonth > 11) { seasonDatePickerState.viewMonth = 0; seasonDatePickerState.viewYear++; }
+      renderSeasonDatePickerCalendar();
+    });
+  });
+  $$('.date-popup-day[data-date]', popup).forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      targetInput.value = btn.dataset.date;
+      targetInput.dispatchEvent(new Event('change'));
+      closeSeasonDatePicker();
+    });
+  });
+}
+function openSeasonDatePicker(inputEl) {
+  const existing = inputEl.value;
+  const [y, m, d] = existing ? existing.split('-').map(Number) : [null, null, null];
+  const base = existing ? new Date(y, m - 1, d) : new Date();
+  seasonDatePickerState = { targetInput: inputEl, viewYear: base.getFullYear(), viewMonth: base.getMonth() };
+  renderSeasonDatePickerCalendar();
+  const popup = $('#seasonDatePopup');
+  popup.style.display = 'block';
+  const rect = inputEl.getBoundingClientRect();
+  popup.style.position = 'fixed';
+  popup.style.top = `${rect.bottom + 4}px`;
+  popup.style.left = `${rect.left}px`;
+  setTimeout(() => document.addEventListener('click', handleSeasonDatePickerOutsideClick, true), 0);
+}
+
 function setupSeasonControls() {
+  $('#seasonStartMonth').addEventListener('click', () => openSeasonDatePicker($('#seasonStartMonth')));
+  $('#seasonEndMonth').addEventListener('click', () => openSeasonDatePicker($('#seasonEndMonth')));
+
   $('#seasonSelect').addEventListener('change', async (e) => {
     state.currentSeasonId = Number(e.target.value);
     renderSeasonRangeInputs();

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>로운 원가설계판</title>
-<link rel="stylesheet" href="style.css?v=202608112130">
+<link rel="stylesheet" href="style.css?v=202608112300">
 </head>
 <body>
 
@@ -38,10 +38,11 @@
       <label for="seasonSelect" class="season-label">시즌</label>
       <select id="seasonSelect"></select>
       <label for="seasonStartMonth" class="season-label">범위</label>
-      <input type="date" id="seasonStartMonth" class="season-range-input">
+      <input type="text" id="seasonStartMonth" class="season-range-input" readonly placeholder="YYYY-MM-DD">
       <span class="season-range-sep">~</span>
-      <input type="date" id="seasonEndMonth" class="season-range-input">
+      <input type="text" id="seasonEndMonth" class="season-range-input" readonly placeholder="YYYY-MM-DD">
       <button id="newSeasonBtn" class="btn btn-ghost btn-sm" type="button">+ 새 시즌</button>
+      <div id="seasonDatePopup" class="date-popup-calendar" style="display:none;"></div>
     </div>
     <button id="logoutBtn" class="btn btn-ghost btn-sm" type="button">로그아웃</button>
   </header>
@@ -644,6 +645,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608112200"></script>
+<script src="app.js?v=202608112300"></script>
 </body>
 </html>
