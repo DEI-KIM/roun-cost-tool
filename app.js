@@ -3711,13 +3711,15 @@ async function loadPivotTimeSeriesData() {
   const fromVal = $('#pivotTsFromSelect').value;
   if (!fromVal) return { error: '시작 시점을 선택해주세요.' };
 
+  // 아직 시작하지 않은 미래 기간은 항상 데이터가 없으므로(다음 시즌 미리 등록 등) 오늘까지만 조회한다.
+  const todayStr = new Date().toISOString().slice(0, 10);
   let periods;
   if (unit === 'w') {
-    const all = pivotAllWeekPeriods(range.from, range.to);
+    const all = pivotAllWeekPeriods(range.from, range.to).filter(w => w.periodStart <= todayStr);
     const idx = all.findIndex(w => `${w.periodStart}|${w.periodEnd}` === fromVal);
     periods = (idx >= 0 ? all.slice(idx) : all).map(w => ({ start: w.periodStart, end: w.periodEnd, label: w.periodEnd.slice(2) }));
   } else {
-    const all = pivotMonthRange(range.from, range.to);
+    const all = pivotMonthRange(range.from, range.to).filter(m => m + '-01' <= todayStr);
     const idx = all.findIndex(m => m === fromVal);
     periods = (idx >= 0 ? all.slice(idx) : all).map(m => {
       const [y, mm] = m.split('-').map(Number);
