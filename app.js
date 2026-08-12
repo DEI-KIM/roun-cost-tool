@@ -3526,7 +3526,8 @@ function renderPivotCompare() {
       if (hasParts && pivotOpenIng[mid]) {
         [...ings.entries()].sort((a, b) => b[1] - a[1]).forEach(([code, g]) => {
           const share = g / cookedWeight;
-          H += `<tr class="pivot-ing"><td title="${esc(code)}">└ ${esc(code)} <span class="pivot-badge">${fmtNum(g, 1)}g/${fmtNum(cookedWeight, 0)}g</span></td>`;
+          const ingName = data.flat.rawMaterialNameByCode.get(code) || code;
+          H += `<tr class="pivot-ing"><td title="${esc(ingName)}">└ ${esc(ingName)} <span class="pivot-badge">${fmtNum(g, 1)}g/${fmtNum(cookedWeight, 0)}g</span></td>`;
           columns.forEach(c => {
             const gv = pivotGroupValue(m.result, c.codes);
             if (gv.grams == null) { H += '<td class="pivot-na">—</td>'; return; }
