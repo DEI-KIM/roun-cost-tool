@@ -17,17 +17,24 @@ async function deleteInChunks(table, ids, chunkSize = 200) {
 // PostgREST caps a single request at 1000 rows by default; page through until exhausted.
 async function fetchAllRows(table, applyFilters, selectCols = '*') {
   const pageSize = 1000;
-  let all = [];
-  let from = 0;
-  while (true) {
-    let q = sb.from(table).select(selectCols);
+  const buildQuery = (withCount) => {
+    let q = sb.from(table).select(selectCols, withCount ? { count: 'exact' } : undefined);
     if (applyFilters) q = applyFilters(q);
     // stable tiebreaker so .range() pages don't return duplicate/missing rows on tables past 1000 rows
-    const { data, error } = await q.order('id', { ascending: true }).range(from, from + pageSize - 1);
-    if (error) return { data: null, error };
-    all = all.concat(data || []);
-    if (!data || data.length < pageSize) break;
-    from += pageSize;
+    return q.order('id', { ascending: true });
+  };
+  const { data: firstPage, error: firstErr, count } = await buildQuery(true).range(0, pageSize - 1);
+  if (firstErr) return { data: null, error: firstErr };
+  let all = firstPage || [];
+  // 총 개수를 알면 남은 페이지들을 한번에 병렬로 가져온다(순차 대기 없이) — 큰 표(예: 자재사용량)에서 효과 큼
+  if (typeof count === 'number' && all.length >= pageSize && all.length < count) {
+    const pageFroms = [];
+    for (let from = pageSize; from < count; from += pageSize) pageFroms.push(from);
+    const rest = await Promise.all(pageFroms.map(from => buildQuery(false).range(from, from + pageSize - 1)));
+    for (const r of rest) {
+      if (r.error) return { data: null, error: r.error };
+      all = all.concat(r.data || []);
+    }
   }
   return { data: all, error: null };
 }
