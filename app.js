@@ -3902,7 +3902,7 @@ function computeVE() {
       menu_name: it.menu_name, zone: it.zone, asis_wpg: it.wpg, asis_g: it.g, asis_won: it.won,
       in_wpg: inWpg, in_g: inG, tobe_wpg: tobeWpg, tobe_g: tobeG, tobe_won: tobeWon, d_won: dWon, d_pp: dPp,
       phase: p.phase || '확인 중', action_plan: p.action_plan || '',
-      note: (inWpg == null && inG == null) ? 'TO-BE 미입력 — 효과 0' : '',
+      note: '', // TO-BE 미입력은 기본 상태라 매 행마다 표시하면 오히려 어수선함 — AS-IS 산출불가만 note로 표시
     };
   });
   rows.sort((a, b) => (a.d_won ?? 0) - (b.d_won ?? 0));
@@ -3953,7 +3953,10 @@ function renderVE() {
     VE_PHASES.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('') + `</select>`;
   const txt = (menu, v) => `<input class="pivot-ve-in pivot-ve-wide" value="${esc(v || '').replace(/"/g, '&quot;')}" onchange="veSet('${qesc(menu)}','action_plan',this.value)">`;
 
-  let H = `<thead><tr><th colspan="12" style="text-align:left;background:var(--accent-soft)">` +
+  // 첫 행이 colspan=12짜리 셀 하나뿐이라 table-layout:fixed가 열 폭을 못 읽어서(첫 열이 찌그러짐),
+  // colgroup으로 명시해준다.
+  let H = `<colgroup><col style="width:250px">` + Array(11).fill('<col>').join('') + `</colgroup>` +
+    `<thead><tr><th colspan="12" style="text-align:left;background:var(--accent-soft)">` +
     `<span class="pivot-vek">VE 합계 <b class="${cl(V.total.d_won)}">${sgn(V.total.d_won, 0)}원/객</b></span>` +
     `<span class="pivot-vek">원가율 <b class="${cl(V.total.d_pp)}">${sgn(V.total.d_pp, 2)}%p</b></span>` +
     `<span class="pivot-vek">현재 <b>${V.rate != null ? V.rate.toFixed(2) : '—'}%</b> → VE 후 <b>${V.total.rate_after != null ? V.total.rate_after.toFixed(2) : '—'}%</b></span>` +
