@@ -720,8 +720,13 @@ function renderCostTrendChart(months, ratios, targetRatio) {
 
   const pts = ratios.map((v, i) => v != null ? [xFor(i), yFor(v)] : null).filter(Boolean);
   const path = buildSmoothPath(pts);
-  const lastPt = pts[pts.length - 1];
-  const lastVal = valid[valid.length - 1];
+  // 점마다 원가율 라벨 — 짝수/홀수 번째를 위아래로 살짝 엇갈리게 둬서 인접한 점끼리 겹치지 않게 함
+  const pointLabels = ratios.map((v, i) => {
+    if (v == null) return '';
+    const [x, y] = [xFor(i), yFor(v)];
+    const dy = i % 2 === 0 ? -10 : -20;
+    return `<text x="${x}" y="${y + dy}" font-size="10" font-weight="700" fill="var(--accent-deep)" text-anchor="middle">${v.toFixed(1)}%</text>`;
+  }).join('');
 
   const targetLine = targetRatio != null
     ? `<line x1="${padding.left}" y1="${yFor(targetRatio)}" x2="${width - padding.right}" y2="${yFor(targetRatio)}" stroke="var(--line-strong)" stroke-width="2" stroke-dasharray="4 3" />`
@@ -736,7 +741,7 @@ function renderCostTrendChart(months, ratios, targetRatio) {
       ${gridLines}${yLabels}${targetLine}
       <path d="${path}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" />
       ${pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="3" fill="var(--accent)" />`).join('')}
-      ${lastPt ? `<text x="${lastPt[0]}" y="${lastPt[1] - 10}" font-size="12" font-weight="700" fill="var(--accent-deep)" text-anchor="end">${lastVal.toFixed(1)}%</text>` : ''}
+      ${pointLabels}
       ${xLabels}
     </svg>`;
 }
