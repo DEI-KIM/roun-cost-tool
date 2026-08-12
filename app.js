@@ -1692,7 +1692,10 @@ function findSeasonIdForDate(dateStr) {
   if (!withRange.length) return state.currentSeasonId;
   return withRange.reduce((a, b) => (a.start_month > b.start_month ? a : b)).id;
 }
-async function computeMenuConsumption(onProgress, dateRange) {
+// brandOnly=true면 매장별 IPF(가장 느린 부분, 17개 매장×반복계산)를 건너뛰고 전 매장 실사용량을 한 번에
+// 합쳐 브랜드 전체 그램만 계산한다 — 시계열 탭처럼 짧은 기간을 여러 번(주차별·월별) 반복 계산해야 할 때 씀.
+// 매장별 세부값은 못 주지만, 브랜드 전체 원가율/존별 소비액은 정확하다(레퍼런스도 존별 분해는 브랜드만 제공).
+async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
   let seasonId, applyRange;
   if (dateRange) {
     seasonId = findSeasonIdForDate(dateRange.end);
@@ -1831,10 +1834,18 @@ async function computeMenuConsumption(onProgress, dateRange) {
   const pricePerCustomer = totalCustomers ? totalSales / totalCustomers : null;
 
   const consumptionOverrideByMenu = new Map();
-  estimateGramsProduced(recipeCtx, buildActualByMaterial(usageRows || []), (menu) => {
+  const wholeBrandPass = estimateGramsProduced(recipeCtx, buildActualByMaterial(usageRows || []), (menu) => {
     const d = designByMenu.get(menu);
     if (d?.consumption_per_person > 0) consumptionOverrideByMenu.set(menu, d.consumption_per_person);
   });
+
+  if (brandOnly) {
+    return {
+      brandOnly: true,
+      gramsProducedByMenu: wholeBrandPass.gramsProducedByMenu,
+      designByMenu, totalCustomers, totalSales,
+    };
+  }
 
   // ---- 메뉴별로 매장 결과를 취합해 브랜드값을 만든다 (실사용 근거가 있는 매장만 분자/분모에 반영) ----
   // 분모(객수)는 메뉴의 운영패턴에 맞는 객수를 쓴다 — 자재사용량은 월 단위라 그램(분자)은 못 쪼개지만,
@@ -3312,7 +3323,8 @@ function setPivotTab(t) {
   $('#pivotStoreSelectBox').style.display = t === 'A' ? '' : 'none';
   $('#pivotResetOrderBtn').style.display = t === 'B' ? '' : 'none';
   if (t === 'A' || t === 'B') loadPivotCompareView();
-  // TODO(다음 단계): loadPivotTimeSeriesView / loadPivotVEView 연결
+  if (t === 'C') loadPivotTimeSeriesView();
+  // TODO(다음 단계): loadPivotVEView 연결
 }
 $$('.pivot-tab-btn').forEach(btn => {
   btn.addEventListener('click', () => setPivotTab(btn.dataset.pivotTab));
@@ -3609,6 +3621,184 @@ $('#pivotMonthInput').addEventListener('change', loadPivotCompareView);
 $('#pivotWeekSelect').addEventListener('change', loadPivotCompareView);
 $('#pivotModeSelect').addEventListener('change', renderPivotCompare);
 $('#pivotStoreSelect').addEventListener('change', renderPivotCompare);
+
+// ---- ③ 시계열 ----
+// 매장별 IPF는 기간마다 반복하기엔 너무 느려서(매장당 반복계산), computeMenuConsumption의
+// brandOnly 경로(전 매장 실사용량을 한 번에 합쳐 계산)로 기간마다 빠르게 돌린다.
+// 매장을 선택하면 존별 분해 없이(레퍼런스도 존별 분해는 브랜드 전용) 그 매장 원가율/원객/축산만 직접 합산한다.
+function pivotMonthRange(fromMonth, toMonth) {
+  const out = [];
+  let [y, m] = fromMonth.split('-').map(Number);
+  const [ey, em] = toMonth.split('-').map(Number);
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(`${y}-${String(m).padStart(2, '0')}`);
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return out;
+}
+function pivotAllWeekPeriods(fromMonth, toMonth) {
+  const out = [];
+  pivotMonthRange(fromMonth, toMonth).forEach(mo => {
+    const [y, m] = mo.split('-').map(Number);
+    computeWeekOptionsForMonth(y, m).forEach(w => out.push(w));
+  });
+  return out;
+}
+function pivotTsSeasonRange() {
+  const withRange = state.seasons.filter(s => s.start_month && s.end_month);
+  if (!withRange.length) return null;
+  const earliest = withRange.reduce((a, b) => (a.start_month < b.start_month ? a : b));
+  const latest = withRange.reduce((a, b) => (a.end_month > b.end_month ? a : b));
+  return { from: earliest.start_month.slice(0, 7), to: latest.end_month.slice(0, 7) };
+}
+
+let pivotTsCache = null;
+let pivotTsStoresLoaded = false;
+async function ensurePivotTsStoreOptions() {
+  if (pivotTsStoresLoaded) return;
+  pivotTsStoresLoaded = true;
+  const { data } = await fetchAllRows('store_sales', null, 'store_code, store_name');
+  const map = new Map();
+  (data || []).forEach(r => { if (r.store_code && !map.has(r.store_code)) map.set(r.store_code, r.store_name || r.store_code); });
+  const sel = $('#pivotTsTargetSelect');
+  [...map.entries()].forEach(([code, name]) => {
+    const opt = document.createElement('option');
+    opt.value = code; opt.textContent = pivotShortName(name);
+    sel.appendChild(opt);
+  });
+}
+function populatePivotTsFromSelect() {
+  const unit = $('#pivotTsUnitSelect').value;
+  const range = pivotTsSeasonRange();
+  const sel = $('#pivotTsFromSelect');
+  const cur = sel.value;
+  if (!range) { sel.innerHTML = ''; return; }
+  const opts = unit === 'w'
+    ? pivotAllWeekPeriods(range.from, range.to).map(w => ({ value: `${w.periodStart}|${w.periodEnd}`, label: w.periodEnd.slice(2) }))
+    : pivotMonthRange(range.from, range.to).map(m => ({ value: m, label: m.slice(2) }));
+  sel.innerHTML = opts.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
+  if (opts.some(o => o.value === cur)) sel.value = cur;
+  else { const dflt = unit === 'w' ? 16 : 12; sel.value = opts[Math.max(0, opts.length - dflt)]?.value || opts[0]?.value || ''; }
+}
+
+async function loadPivotTimeSeriesData() {
+  const unit = $('#pivotTsUnitSelect').value;
+  const range = pivotTsSeasonRange();
+  if (!range) return { error: '시즌 데이터가 없습니다.' };
+  const fromVal = $('#pivotTsFromSelect').value;
+  if (!fromVal) return { error: '시작 시점을 선택해주세요.' };
+
+  let periods;
+  if (unit === 'w') {
+    const all = pivotAllWeekPeriods(range.from, range.to);
+    const idx = all.findIndex(w => `${w.periodStart}|${w.periodEnd}` === fromVal);
+    periods = (idx >= 0 ? all.slice(idx) : all).map(w => ({ start: w.periodStart, end: w.periodEnd, label: w.periodEnd.slice(2) }));
+  } else {
+    const all = pivotMonthRange(range.from, range.to);
+    const idx = all.findIndex(m => m === fromVal);
+    periods = (idx >= 0 ? all.slice(idx) : all).map(m => {
+      const [y, mm] = m.split('-').map(Number);
+      const last = new Date(y, mm, 0).getDate();
+      return { start: `${m}-01`, end: `${m}-${String(last).padStart(2, '0')}`, label: m.slice(2) };
+    });
+  }
+
+  const targetCode = $('#pivotTsTargetSelect').value;
+  const costCacheBySeasonId = new Map();
+  const out = [];
+  for (const p of periods) {
+    const seasonId = findSeasonIdForDate(p.end);
+    const season = state.seasons.find(s => s.id === seasonId);
+    if (targetCode === 'brand') {
+      const consumption = await computeMenuConsumption(null, { start: p.start, end: p.end }, true);
+      if (consumption.error || !consumption.brandOnly) { out.push({ ...p, seasonName: season?.name }); continue; }
+      if (!costCacheBySeasonId.has(seasonId)) costCacheBySeasonId.set(seasonId, await computeActualCostPerGram(seasonId));
+      const costResult = costCacheBySeasonId.get(seasonId);
+      const costByMenu = new Map((costResult.results || []).map(r => [r.menu_name, r.actual_cost_per_gram]));
+      let totalAmt = 0, meatAmt = 0;
+      const zoneAmt = {}, zoneGrams = {};
+      consumption.designByMenu.forEach((d, menu) => {
+        const grams = consumption.gramsProducedByMenu.get(menu);
+        if (grams == null || !d.category) return;
+        const costPerGram = costByMenu.get(menu) ?? d.cost_per_gram;
+        const amt = grams * (costPerGram || 0);
+        totalAmt += amt;
+        zoneAmt[d.category] = (zoneAmt[d.category] || 0) + amt;
+        zoneGrams[d.category] = (zoneGrams[d.category] || 0) + grams;
+        if (d.category === '축산') meatAmt += amt;
+      });
+      out.push({ ...p, seasonName: season?.name, totalAmt, meatAmt, zoneAmt, zoneGrams,
+        totalCustomers: consumption.totalCustomers, netSales: consumption.totalSales / 1.1 });
+    } else {
+      const [{ data: usage }, { data: sales }] = await Promise.all([
+        fetchAllRows('material_usage', q => q.eq('store_code', targetCode).gte('period_end', p.start).lt('period_end', nextDay(p.end)), 'remark, actual_usage_amount'),
+        fetchAllRows('store_sales', q => q.eq('store_code', targetCode).gte('sales_date', p.start).lt('sales_date', nextDay(p.end)), 'sales_total, customers_total'),
+      ]);
+      const totalAmt = (usage || []).reduce((a, r) => a + (Number(r.actual_usage_amount) || 0), 0);
+      const meatAmt = (usage || []).filter(r => r.remark === '축산').reduce((a, r) => a + (Number(r.actual_usage_amount) || 0), 0);
+      const totalCustomers = (sales || []).reduce((a, r) => a + (Number(r.customers_total) || 0), 0);
+      const totalSales = (sales || []).reduce((a, r) => a + (Number(r.sales_total) || 0), 0);
+      out.push({ ...p, seasonName: season?.name, totalAmt, meatAmt, totalCustomers, netSales: totalSales / 1.1 });
+    }
+  }
+  return { periods: out, targetCode };
+}
+
+function renderPivotTimeSeries() {
+  const data = pivotTsCache;
+  const tbl = $('#pivotTable');
+  if (!data) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>'; return; }
+  if (data.error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(data.error)}</td></tr></tbody>`; return; }
+  const mode = $('#pivotTsModeSelect').value;
+
+  let H = '<thead><tr><th>지표 / 기간</th>';
+  let prevSeason = null;
+  data.periods.forEach(p => {
+    const tag = p.seasonName && p.seasonName !== prevSeason ? `<br><span class="pivot-seas">▼${esc(p.seasonName)}</span>` : '';
+    prevSeason = p.seasonName || prevSeason;
+    H += `<th>${esc(p.label)}${tag}</th>`;
+  });
+  H += '</tr></thead><tbody>';
+
+  const row = (label, fn, cls) => {
+    let h = `<tr class="${cls || ''}"><td>${esc(label)}</td>`;
+    data.periods.forEach(p => { h += `<td>${fn(p)}</td>`; });
+    return h + '</tr>';
+  };
+  H += row('원가율 %', p => (p.totalAmt != null && p.netSales) ? (p.totalAmt / p.netSales * 100).toFixed(1) + '%' : '—', 'pivot-met');
+  H += row('원/객 (총)', p => (p.totalAmt != null && p.totalCustomers) ? fmtNum(p.totalAmt / p.totalCustomers, 0) : '—', 'pivot-met');
+  H += row('축산 원/객', p => (p.meatAmt != null && p.totalCustomers) ? fmtNum(p.meatAmt / p.totalCustomers, 0) : '—', 'pivot-met');
+  H += row('축산 %', p => (p.meatAmt != null && p.netSales) ? (p.meatAmt / p.netSales * 100).toFixed(1) + '%' : '—', 'pivot-met');
+
+  if (data.targetCode === 'brand') {
+    CATEGORY_ORDER.filter(z => z !== '드랍').forEach(zone => {
+      H += row(`【${zone}】`, p => {
+        const amt = p.zoneAmt?.[zone];
+        if (amt == null) return '—';
+        if (mode === 'g') { const g = p.zoneGrams?.[zone]; return (g != null && p.totalCustomers) ? fmtNum(g / p.totalCustomers, 1) : '—'; }
+        if (mode === 'pp') return p.netSales ? (amt / p.netSales * 100).toFixed(1) + '%' : '—';
+        return p.totalCustomers ? fmtNum(amt / p.totalCustomers, 0) : '—';
+      });
+    });
+  } else {
+    H += `<tr><td colspan="${data.periods.length + 1}" class="pivot-note" style="position:static">존별 분해는 "브랜드 전체" 대상에서만 제공됩니다(매장별 존 배분 근거 부족).</td></tr>`;
+  }
+  H += '</tbody>';
+  tbl.innerHTML = H;
+}
+
+async function loadPivotTimeSeriesView() {
+  const tbl = $('#pivotTable');
+  tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중... (기간이 많으면 시간이 걸릴 수 있어요)</td></tr></tbody>';
+  await ensurePivotTsStoreOptions();
+  populatePivotTsFromSelect();
+  pivotTsCache = await loadPivotTimeSeriesData();
+  renderPivotTimeSeries();
+}
+$('#pivotTsTargetSelect').addEventListener('change', loadPivotTimeSeriesView);
+$('#pivotTsUnitSelect').addEventListener('change', loadPivotTimeSeriesView);
+$('#pivotTsFromSelect').addEventListener('change', loadPivotTimeSeriesView);
+$('#pivotTsModeSelect').addEventListener('change', renderPivotTimeSeries);
 
 // ---------- Start ----------
 initAuth();
