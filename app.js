@@ -3368,9 +3368,20 @@ function renderPivotWeekOptions() {
   sel.innerHTML = weeks.map(w => `<option value="${w.periodStart}|${w.periodEnd}">${w.label}</option>`).join('');
   if (weeks.length) sel.value = `${weeks[weeks.length - 1].periodStart}|${weeks[weeks.length - 1].periodEnd}`;
 }
+function renderPivotSeasonOptions() {
+  const sel = $('#pivotSeasonSelect');
+  const cur = sel.value;
+  const withRange = state.seasons.filter(s => s.start_month && s.end_month);
+  sel.innerHTML = withRange.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  if (withRange.some(s => String(s.id) === cur)) sel.value = cur;
+  else if (state.currentSeasonId && withRange.some(s => s.id === state.currentSeasonId)) sel.value = state.currentSeasonId;
+}
 function updatePivotUnitVisibility() {
-  const isWeek = $('#pivotUnitSelect').value === 'w';
-  $('#pivotWeekSelect').style.display = isWeek ? '' : 'none';
+  const unit = $('#pivotUnitSelect').value;
+  $('#pivotMonthInput').style.display = unit === 's' ? 'none' : '';
+  $('#pivotWeekSelect').style.display = unit === 'w' ? '' : 'none';
+  $('#pivotSeasonSelect').style.display = unit === 's' ? '' : 'none';
+  if (unit === 's') renderPivotSeasonOptions();
 }
 (() => {
   const now = new Date();
@@ -3380,6 +3391,7 @@ function updatePivotUnitVisibility() {
 })();
 $('#pivotMonthInput').addEventListener('change', renderPivotWeekOptions);
 $('#pivotUnitSelect').addEventListener('change', updatePivotUnitVisibility);
+$('#pivotSeasonSelect').addEventListener('change', loadPivotCompareView);
 
 // ---- ①비교 ②전매장 공용 엔진 ----
 // 매장군: storeType()의 value/regular를 그대로 재사용(레퍼런스의 "프리미엄"은 우리 데이터에 없어 제외).
@@ -3387,6 +3399,14 @@ function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': 
 function pivotShortName(n) { return (n || '').replace('로운샤브 프리미엄 ', '[프] ').replace('로운 ', ''); }
 function pivotDateRangeFromControls() {
   const unit = $('#pivotUnitSelect').value;
+  if (unit === 's') {
+    const seasonId = Number($('#pivotSeasonSelect').value);
+    const season = state.seasons.find(s => s.id === seasonId);
+    if (!season) return null;
+    // 시즌 단위는 그 시즌의 시작~끝을 그대로 쓴다 — 월별처럼 달력 경계로 자르면 다른 시즌의
+    // 레시피가 섞여 들어가는 문제(예: 7월 조회가 26년초여름/26년여름 레시피를 뒤섞음)가 생기지 않는다.
+    return { start: season.start_month, end: season.end_month, seasonId };
+  }
   const monthValue = $('#pivotMonthInput').value;
   if (!monthValue) return null;
   if (unit === 'w') {

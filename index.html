@@ -137,10 +137,12 @@
         <select id="pivotUnitSelect">
           <option value="w">주차별</option>
           <option value="m">월별</option>
+          <option value="s">시즌별</option>
         </select>
         <label>연월:</label>
         <input type="month" id="pivotMonthInput">
         <select id="pivotWeekSelect"></select>
+        <select id="pivotSeasonSelect" style="display:none"></select>
         <label>구분:</label>
         <select id="pivotModeSelect">
           <option value="pg">인당금액 원/객</option>
@@ -696,6 +698,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608131745"></script>
+<script src="app.js?v=202608131800"></script>
 </body>
 </html>
