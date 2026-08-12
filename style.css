@@ -406,7 +406,7 @@ table { font-variant-numeric: tabular-nums; }
 .pivot-legend { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
 
 .pivot-wrap { overflow: auto; max-height: calc(100vh - 260px); border: 1px solid var(--line); }
-.pivot-table { border-collapse: separate; border-spacing: 0; font-size: 12.5px; width: 100%; }
+.pivot-table { border-collapse: separate; border-spacing: 0; font-size: 12.5px; width: 100%; table-layout: fixed; }
 .pivot-table th, .pivot-table td { padding: 3px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .pivot-table thead th {
   position: sticky; top: 0; background: var(--paper); z-index: 3; border-bottom: 2px solid var(--ink);
@@ -414,9 +414,10 @@ table { font-variant-numeric: tabular-nums; }
 }
 .pivot-table thead th:first-child { text-align: left; z-index: 4; }
 .pivot-table td { text-align: right; font-variant-numeric: tabular-nums; }
+/* 존/메뉴·자재 이름 열은 내용에 맞춰 좁게 고정하고(table-layout:fixed), 나머지 값 열들이 남은 폭을 균등하게 나눠 쓰게 함 */
 .pivot-table td:first-child, .pivot-table th:first-child {
   position: sticky; left: 0; background: var(--surface); z-index: 2; text-align: left;
-  border-right: 1px solid var(--line); max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+  border-right: 1px solid var(--line); width: 230px; overflow: hidden; text-overflow: ellipsis;
 }
 .pivot-table tr.pivot-zone td { background: var(--accent-soft); font-weight: 700; cursor: pointer; }
 .pivot-table tr.pivot-zone td:first-child { background: var(--accent-soft); }
