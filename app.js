@@ -224,11 +224,16 @@ function currentSeason() {
 // 시즌에 범위가 지정되어 있으면 범위로 필터링하고, 아직 범위가 없으면 기존 방식(season_id)으로 대체.
 // end_month는 "포함되는 마지막 날짜"(일 단위)로 저장되어 있어, 상한은 그 다음 날 미만으로 잡는다.
 function applySeasonDateFilter(query, dateField) {
-  const season = currentSeason();
+  return applyDateFilterForSeason(query, dateField, state.currentSeasonId);
+}
+// applySeasonDateFilter와 같은 로직이지만, 화면에 선택된 "현재 시즌"이 아니라 임의의 seasonId를 받는다 —
+// 피벗처럼 화면 상단 시즌 선택과 무관하게 특정 시즌의 자재단가를 조회해야 하는 곳에서 씀.
+function applyDateFilterForSeason(query, dateField, seasonId) {
+  const season = state.seasons.find(s => s.id === seasonId);
   if (season?.start_month && season?.end_month) {
     return query.gte(dateField, season.start_month).lt(dateField, nextDay(season.end_month));
   }
-  return query.eq('season_id', state.currentSeasonId);
+  return query.eq('season_id', seasonId);
 }
 
 // 시즌명을 "26년 여름" 형태로 넣으면 연도 오름차순 -> 봄/여름/가을/겨울 순으로 정렬한다.
@@ -1935,7 +1940,7 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
 // 레시피 등록 단가(최초 1회성 수기입력, 원/kg -> 원/g 환산)로 대체한다. computeActualCostPerGram과
 // 메뉴 진단 탭(자재별 원가 기여도 분석)이 이 로직을 공유한다.
 async function buildMaterialPriceResolver(seasonId) {
-  const { data: monthRows } = await fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'period_end'), 'usage_month');
+  const { data: monthRows } = await fetchAllRows('material_usage', q => applyDateFilterForSeason(q, 'period_end', seasonId), 'usage_month');
   const months = [...new Set((monthRows || []).map(r => r.usage_month).filter(Boolean))].sort();
   const latestMonth = months[months.length - 1];
   if (!latestMonth) return { error: '자재사용량 데이터가 없습니다.' };
