@@ -3677,8 +3677,16 @@ function populatePivotTsFromSelect() {
     ? pivotAllWeekPeriods(range.from, range.to).map(w => ({ value: `${w.periodStart}|${w.periodEnd}`, label: w.periodEnd.slice(2) }))
     : pivotMonthRange(range.from, range.to).map(m => ({ value: m, label: m.slice(2) }));
   sel.innerHTML = opts.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
-  if (opts.some(o => o.value === cur)) sel.value = cur;
-  else { const dflt = unit === 'w' ? 16 : 12; sel.value = opts[Math.max(0, opts.length - dflt)]?.value || opts[0]?.value || ''; }
+  if (opts.some(o => o.value === cur)) { sel.value = cur; return; }
+  const dflt = unit === 'w' ? 16 : 12;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  let anchorIdx = -1;
+  for (let i = 0; i < opts.length; i++) {
+    const cmp = unit === 'w' ? opts[i].value.split('|')[1] : opts[i].value + '-01';
+    if (cmp <= todayStr) anchorIdx = i; else break;
+  }
+  if (anchorIdx < 0) anchorIdx = opts.length - 1;
+  sel.value = opts[Math.max(0, anchorIdx - dflt + 1)]?.value || opts[0]?.value || '';
 }
 
 async function loadPivotTimeSeriesData() {
