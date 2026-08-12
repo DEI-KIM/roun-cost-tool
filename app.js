@@ -1929,9 +1929,17 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
 // 레시피 등록 단가(최초 1회성 수기입력, 원/kg -> 원/g 환산)로 대체한다. computeActualCostPerGram과
 // 메뉴 진단 탭(자재별 원가 기여도 분석)이 이 로직을 공유한다.
 async function buildMaterialPriceResolver(seasonId) {
-  const { data: monthRows } = await fetchAllRows('material_usage', q => applyDateFilterForSeason(q, 'period_end', seasonId), 'usage_month');
-  const months = [...new Set((monthRows || []).map(r => r.usage_month).filter(Boolean))].sort();
-  const latestMonth = months[months.length - 1];
+  // 시즌 안에서 가장 최근 usage_month 하나만 필요한데, 예전엔 시즌 전체 자재사용량 행(시즌 하나에 수만~십만 행)의
+  // usage_month를 다 받아와서 그 중 최댓값을 구했다 — 정렬 후 1행만 요청하도록 바꿔서 대부분의 전송을 없앰.
+  let monthQ = sb.from('material_usage').select('usage_month');
+  monthQ = applyDateFilterForSeason(monthQ, 'period_end', seasonId);
+  const { data: latestRow, error: latestErr } = await monthQ
+    .not('usage_month', 'is', null)
+    .order('usage_month', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (latestErr) return { error: latestErr.message || String(latestErr) };
+  const latestMonth = latestRow?.usage_month;
   if (!latestMonth) return { error: '자재사용량 데이터가 없습니다.' };
 
   const [{ data: usageRows }, { data: recipeRows }, aliasRes] = await Promise.all([
