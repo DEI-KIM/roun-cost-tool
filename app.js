@@ -17,30 +17,17 @@ async function deleteInChunks(table, ids, chunkSize = 200) {
 // PostgREST caps a single request at 1000 rows by default; page through until exhausted.
 async function fetchAllRows(table, applyFilters, selectCols = '*') {
   const pageSize = 1000;
-  // 피벗 탭처럼 fetchAllRows를 여러 개 동시에(Promise.all) 부르는 곳이 있어서, 여기서도 너무 크게 잡으면
-  // 한 화면 로드에서 수십 개 요청이 한꺼번에 몰려 일부가 실패/지연될 수 있다 — 4로 낮춰서 여유를 둠.
-  const CONCURRENCY = 4;
-  const buildQuery = (from) => {
+  let all = [];
+  let from = 0;
+  while (true) {
     let q = sb.from(table).select(selectCols);
     if (applyFilters) q = applyFilters(q);
     // stable tiebreaker so .range() pages don't return duplicate/missing rows on tables past 1000 rows
-    return q.order('id', { ascending: true }).range(from, from + pageSize - 1);
-  };
-  // count(*)는 큰 표에서 statement timeout을 낼 수 있어 쓰지 않는다 — 대신 한 배치(CONCURRENCY개 페이지)를
-  // 병렬로 미리 쏴보고, 배치 안에 꽉 안 찬 페이지가 하나라도 있으면 그 뒤로 더 없다고 보고 멈춘다.
-  let all = [];
-  let from = 0;
-  let done = false;
-  while (!done) {
-    const pageFroms = Array.from({ length: CONCURRENCY }, (_, i) => from + i * pageSize);
-    const results = await Promise.all(pageFroms.map(f => buildQuery(f)));
-    for (const r of results) {
-      if (r.error) return { data: null, error: r.error };
-      const rows = r.data || [];
-      all = all.concat(rows);
-      if (rows.length < pageSize) done = true;
-    }
-    from += CONCURRENCY * pageSize;
+    const { data, error } = await q.order('id', { ascending: true }).range(from, from + pageSize - 1);
+    if (error) return { data: null, error };
+    all = all.concat(data || []);
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
   }
   return { data: all, error: null };
 }
