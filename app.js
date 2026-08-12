@@ -1860,6 +1860,7 @@ async function computeMenuConsumption(onProgress, dateRange) {
         consumption_per_person_excl_water: cpp != null ? cpp * (1 - wr) : null,
         consumption_source: hasData ? s.sourceByMenu.get(menu) : 'no_data',
         confidence: hasData ? (s.confidenceByMenu.get(menu) ?? null) : null,
+        grams: hasData ? grams : null, store_customers: storeCustomers, // 피벗 탭에서 매장군(일반/199-229) 합산용
       };
     });
 
@@ -3307,7 +3308,8 @@ function setPivotTab(t) {
   $('#pivotCtlD').style.display = t === 'D' ? '' : 'none';
   $('#pivotStoreSelectBox').style.display = t === 'A' ? '' : 'none';
   $('#pivotResetOrderBtn').style.display = t === 'B' ? '' : 'none';
-  // TODO(2단계 이후): loadPivotCompareView / loadPivotTimeSeriesView / loadPivotVEView 연결
+  if (t === 'A' || t === 'B') loadPivotCompareView();
+  // TODO(다음 단계): loadPivotTimeSeriesView / loadPivotVEView 연결
 }
 $$('.pivot-tab-btn').forEach(btn => {
   btn.addEventListener('click', () => setPivotTab(btn.dataset.pivotTab));
@@ -3334,6 +3336,249 @@ function updatePivotUnitVisibility() {
 })();
 $('#pivotMonthInput').addEventListener('change', renderPivotWeekOptions);
 $('#pivotUnitSelect').addEventListener('change', updatePivotUnitVisibility);
+
+// ---- ①비교 ②전매장 공용 엔진 ----
+// 매장군: storeType()의 value/regular를 그대로 재사용(레퍼런스의 "프리미엄"은 우리 데이터에 없어 제외).
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+function pivotShortName(n) { return (n || '').replace('로운샤브 프리미엄 ', '[프] ').replace('로운 ', ''); }
+function pivotDateRangeFromControls() {
+  const unit = $('#pivotUnitSelect').value;
+  const monthValue = $('#pivotMonthInput').value;
+  if (!monthValue) return null;
+  if (unit === 'w') {
+    const weekVal = $('#pivotWeekSelect').value;
+    if (!weekVal) return null;
+    const [ps, pe] = weekVal.split('|');
+    return { start: ps, end: pe };
+  }
+  const [y, m] = monthValue.split('-').map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  return { start: `${monthValue}-01`, end: `${monthValue}-${String(lastDay).padStart(2, '0')}` };
+}
+
+let pivotCompareCache = null;
+let pivotCollapsed = {};
+let pivotOpenIng = {};
+async function loadPivotCompareData() {
+  const dateRange = pivotDateRangeFromControls();
+  if (!dateRange) return { error: '기간을 선택해주세요.' };
+  const seasonId = findSeasonIdForDate(dateRange.end);
+  if (!seasonId) return { error: '해당 기간을 포함하는 시즌이 없습니다.' };
+
+  const [consumption, costResult, designsRes, salesRes, flat] = await Promise.all([
+    computeMenuConsumption(null, dateRange),
+    computeActualCostPerGram(seasonId),
+    fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
+    fetchAllRows('store_sales', q => q.gte('sales_date', dateRange.start).lt('sales_date', nextDay(dateRange.end)),
+      'store_code, store_name, sales_total, customers_total'),
+    flattenRecipesForSeason(seasonId),
+  ]);
+  if (consumption.error) return { error: consumption.error };
+  if (costResult.error) return { error: costResult.error };
+
+  const designByMenu = new Map();
+  (designsRes.data || []).forEach(d => { if (d.menu_name) designByMenu.set(d.menu_name, d); });
+  const costByMenu = new Map((costResult.results || []).map(r => [r.menu_name, r.actual_cost_per_gram]));
+
+  const storeAgg = new Map();
+  (salesRes.data || []).forEach(r => {
+    if (!r.store_code) return;
+    if (!storeAgg.has(r.store_code)) {
+      storeAgg.set(r.store_code, { code: r.store_code, name: r.store_name || r.store_code, sales: 0, guests: 0, type: storeType(r.store_code) });
+    }
+    const e = storeAgg.get(r.store_code);
+    e.sales += Number(r.sales_total) || 0;
+    e.guests += Number(r.customers_total) || 0;
+  });
+  const stores = [...storeAgg.values()].sort((a, b) => b.guests - a.guests);
+
+  return { dateRange, seasonId, results: consumption.results, designByMenu, costByMenu, stores, flat };
+}
+
+// storeCodes에 속한 매장들의 실제 그램·손님수를 합산 (데이터 있는 매장만 그램에 반영, 손님수는 항상 반영).
+function pivotGroupValue(menuResult, storeCodes) {
+  let grams = 0, customers = 0, any = false;
+  (menuResult?.per_store || []).forEach(s => {
+    if (!storeCodes.includes(s.store_code)) return;
+    customers += s.store_customers || 0;
+    if (s.grams != null) { grams += s.grams; any = true; }
+  });
+  return { grams: any ? grams : null, customers };
+}
+function pivotValueTxt(mode, amt, grams, customers, netSales) {
+  let raw, main;
+  if (mode === 'g') { raw = (customers && grams != null) ? grams / customers : null; main = raw == null ? '—' : fmtNum(raw, 1); }
+  else if (mode === 'pg') { raw = customers ? amt / customers : null; main = raw == null ? '—' : fmtNum(raw, 0); }
+  else if (mode === 'pp') { raw = netSales ? amt / netSales * 100 : null; main = raw == null ? '—' : raw.toFixed(2); }
+  else { raw = amt / 1e6; main = fmtNum(raw, 1); }
+  return { raw, main };
+}
+function pivotDeltaBadge(mode, raw, brandRaw) {
+  if (!(mode === 'pg' || mode === 'g') || raw == null || brandRaw == null || brandRaw <= 0) return '';
+  const d = (raw - brandRaw) / brandRaw * 100;
+  if (!isFinite(d)) return '';
+  const cls = d > 15 ? 'hi' : d < -15 ? 'lo' : '';
+  return ` <span class="pivot-d ${cls}">(${d > 0 ? '+' : ''}${d.toFixed(0)}%)</span>`;
+}
+
+function renderPivotCompare() {
+  const data = pivotCompareCache;
+  const tbl = $('#pivotTable');
+  if (!data) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>'; return; }
+  if (data.error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(data.error)}</td></tr></tbody>`; return; }
+
+  const mode = $('#pivotModeSelect').value;
+  const allCodes = data.stores.map(s => s.code);
+  const regularCodes = data.stores.filter(s => s.type === 'regular').map(s => s.code);
+  const valueCodes = data.stores.filter(s => s.type === 'value').map(s => s.code);
+
+  let columns;
+  if (pivotTab === 'A') {
+    const selCode = $('#pivotStoreSelect').value;
+    const selStore = data.stores.find(s => s.code === selCode);
+    columns = [
+      { key: 'brand', label: '브랜드', codes: allCodes, brand: true },
+      { key: 'regular', label: '일반', codes: regularCodes },
+      { key: 'value', label: '199-229', codes: valueCodes },
+    ];
+    if (selStore) columns.push({ key: 'store', label: pivotShortName(selStore.name), codes: [selCode] });
+  } else {
+    if (!pivotStoreOrder) pivotStoreOrder = (JSON.parse(localStorage.getItem('pivotStoreOrder') || 'null') || []).filter(c => allCodes.includes(c));
+    data.stores.forEach(s => { if (!pivotStoreOrder.includes(s.code)) pivotStoreOrder.push(s.code); });
+    pivotStoreOrder = pivotStoreOrder.filter(c => allCodes.includes(c));
+    columns = [{ key: 'brand', label: '브랜드', codes: allCodes, brand: true }]
+      .concat(pivotStoreOrder.map((c, i) => {
+        const s = data.stores.find(x => x.code === c);
+        return { key: c, label: pivotShortName(s.name), codes: [c], ord: i };
+      }));
+  }
+  columns.forEach(c => {
+    const cs = data.stores.filter(s => c.codes.includes(s.code));
+    c.sales = cs.reduce((a, s) => a + s.sales, 0);
+    c.guests = cs.reduce((a, s) => a + s.guests, 0);
+    c.count = c.codes.length;
+    c.netSales = c.sales / 1.1;
+  });
+
+  const resultByMenu = new Map(data.results.map(r => [r.menu_name, r]));
+  const zonesPresent = [...new Set([...data.designByMenu.values()].map(d => d.category).filter(Boolean))]
+    .sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
+
+  let H = '<thead><tr><th>존 / 메뉴·자재</th>';
+  columns.forEach(c => {
+    const dnd = (pivotTab === 'B' && c.ord != null)
+      ? ` draggable="true" ondragstart="pivotDragStore(event,${c.ord})" ondragover="event.preventDefault()" ondrop="pivotDropStore(event,${c.ord})" style="cursor:grab"`
+      : '';
+    H += `<th${dnd}>${esc(c.label)}<br><span class="pivot-d">${c.count}개점 · ${(c.guests / 1000).toFixed(1)}천명</span></th>`;
+  });
+  H += '</tr></thead><tbody>';
+
+  zonesPresent.forEach(zone => {
+    const menusInZone = [...data.designByMenu.values()].filter(d => d.category === zone);
+    const menuStats = menusInZone.map(d => {
+      const r = resultByMenu.get(d.menu_name);
+      const costPerGram = data.costByMenu.get(d.menu_name) ?? d.cost_per_gram;
+      const brandVal = pivotGroupValue(r, allCodes);
+      const brandAmt = (brandVal.grams || 0) * (costPerGram || 0);
+      return { design: d, result: r, costPerGram, brandGrams: brandVal.grams, brandCustomers: brandVal.customers, brandAmt };
+    }).sort((a, b) => b.brandAmt - a.brandAmt);
+    const zoneBrandAmt = menuStats.reduce((a, m) => a + m.brandAmt, 0);
+    const zoneBrandGrams = menuStats.reduce((a, m) => a + (m.brandGrams || 0), 0);
+    const brandCol = columns.find(c => c.brand);
+    const zoneBrandTxt = pivotValueTxt(mode, zoneBrandAmt, zoneBrandGrams, brandCol.guests, brandCol.netSales);
+
+    const zid = zone;
+    H += `<tr class="pivot-zone" onclick="pivotToggle('${esc(zid)}')"><td>${pivotCollapsed[zid] ? '▸' : '▾'} 【${esc(zone)}】</td>`;
+    columns.forEach(c => {
+      let amt = 0, grams = 0, customers = 0;
+      menuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } customers += g.customers; });
+      const t = pivotValueTxt(mode, amt, grams, customers, c.netSales);
+      const badge = c.brand ? '' : pivotDeltaBadge(mode, t.raw, zoneBrandTxt.raw);
+      H += `<td>${t.main}${badge}</td>`;
+    });
+    H += '</tr>';
+    if (pivotCollapsed[zid]) return;
+
+    menuStats.forEach(m => {
+      const menuName = m.design.menu_name;
+      const ings = (data.flat.flatByMenu.get(menuName) || new Map());
+      const cookedWeight = data.flat.cookedWeightByMenu.get(menuName);
+      const hasParts = ings.size > 1 && cookedWeight > 0;
+      const mid = zone + '|' + menuName;
+      H += `<tr class="pivot-menu"${hasParts ? ` onclick="pivotToggleIng('${esc(mid)}')"` : ''}><td title="${esc(menuName)}">` +
+        (hasParts ? (pivotOpenIng[mid] ? '▾ ' : '▸ ') : '　') + esc(menuName) +
+        (m.result?.consumption_source ? ` <span class="pivot-badge">${esc(CONSUMPTION_SOURCE_LABEL[m.result.consumption_source]?.label || m.result.consumption_source)}</span>` : '') +
+        '</td>';
+      const brandGVal = (m.brandCustomers && m.brandGrams != null) ? m.brandGrams / m.brandCustomers : null;
+      const brandPgVal = m.brandCustomers ? m.brandAmt / m.brandCustomers : null;
+      const menuBrandRaw = mode === 'g' ? brandGVal : mode === 'pg' ? brandPgVal : null;
+      columns.forEach(c => {
+        const g = pivotGroupValue(m.result, c.codes);
+        if (g.grams == null) { H += '<td class="pivot-na">—</td>'; return; }
+        const amt = g.grams * (m.costPerGram || 0);
+        const t = pivotValueTxt(mode, amt, g.grams, g.customers, c.netSales);
+        const badge = c.brand ? '' : pivotDeltaBadge(mode, t.raw, menuBrandRaw);
+        H += `<td>${t.main}${badge}</td>`;
+      });
+      H += '</tr>';
+      if (hasParts && pivotOpenIng[mid]) {
+        [...ings.entries()].sort((a, b) => b[1] - a[1]).forEach(([code, g]) => {
+          const share = g / cookedWeight;
+          H += `<tr class="pivot-ing"><td title="${esc(code)}">└ ${esc(code)} <span class="pivot-badge">${fmtNum(g, 1)}g/${fmtNum(cookedWeight, 0)}g</span></td>`;
+          columns.forEach(c => {
+            const gv = pivotGroupValue(m.result, c.codes);
+            if (gv.grams == null) { H += '<td class="pivot-na">—</td>'; return; }
+            const amt = gv.grams * share * (m.costPerGram || 0);
+            const t = pivotValueTxt(mode, amt, gv.grams * share, gv.customers, c.netSales);
+            H += `<td class="pivot-d">${t.main}</td>`;
+          });
+          H += '</tr>';
+        });
+      }
+    });
+  });
+  H += '</tbody>';
+  tbl.innerHTML = H;
+}
+
+function pivotToggle(zoneId) { pivotCollapsed[zoneId] = !pivotCollapsed[zoneId]; renderPivotCompare(); }
+function pivotToggleIng(menuId) { pivotOpenIng[menuId] = !pivotOpenIng[menuId]; renderPivotCompare(); }
+let pivotStoreOrder = null;
+let pivotDragIdx = null;
+function pivotDragStore(ev, i) { pivotDragIdx = i; }
+function pivotDropStore(ev, i) {
+  ev.preventDefault();
+  if (pivotDragIdx == null || pivotDragIdx === i) return;
+  const moved = pivotStoreOrder.splice(pivotDragIdx, 1)[0];
+  pivotStoreOrder.splice(i, 0, moved);
+  pivotDragIdx = null;
+  localStorage.setItem('pivotStoreOrder', JSON.stringify(pivotStoreOrder));
+  renderPivotCompare();
+}
+$('#pivotResetOrderBtn').addEventListener('click', () => {
+  pivotStoreOrder = null;
+  localStorage.removeItem('pivotStoreOrder');
+  renderPivotCompare();
+});
+
+async function loadPivotCompareView() {
+  const tbl = $('#pivotTable');
+  tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>';
+  const data = await loadPivotCompareData();
+  pivotCompareCache = data;
+  if (!data.error && pivotTab === 'A') {
+    const sel = $('#pivotStoreSelect');
+    const prev = sel.value;
+    sel.innerHTML = data.stores.map(s => `<option value="${s.code}">${esc(pivotShortName(s.name))}</option>`).join('');
+    sel.value = data.stores.some(s => s.code === prev) ? prev : (data.stores[0]?.code || '');
+  }
+  renderPivotCompare();
+}
+$('#pivotUnitSelect').addEventListener('change', loadPivotCompareView);
+$('#pivotMonthInput').addEventListener('change', loadPivotCompareView);
+$('#pivotWeekSelect').addEventListener('change', loadPivotCompareView);
+$('#pivotModeSelect').addEventListener('change', renderPivotCompare);
+$('#pivotStoreSelect').addEventListener('change', renderPivotCompare);
 
 // ---------- Start ----------
 initAuth();
