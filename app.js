@@ -1724,8 +1724,8 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
   const { flatByMenu, cookedWeightByMenu, finalMenus, availabilityPatternByMenu } = flat;
 
   const [{ data: usageRows, error: usageErr }, { data: salesRows, error: salesErr }, { data: designRows }, aliasRes] = await Promise.all([
-    fetchAllRows('material_usage', q => applyRange(q, 'period_end')),
-    fetchAllRows('store_sales', q => applyRange(q, 'sales_date')),
+    fetchAllRows('material_usage', q => applyRange(q, 'period_end'), 'store_code, store_name, material_code, actual_usage_qty, conversion_factor'),
+    fetchAllRows('store_sales', q => applyRange(q, 'sales_date'), 'store_code, store_name, customers_total, customers_dinner, is_holiday, sales_total'),
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
   ]);
