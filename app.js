@@ -3463,6 +3463,16 @@ function renderPivotCompare() {
   const resultByMenu = new Map(data.results.map(r => [r.menu_name, r]));
   const zonesPresent = [...new Set([...data.designByMenu.values()].map(d => d.category).filter(Boolean))]
     .sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
+  const brandCol = columns.find(c => c.brand);
+
+  // 모든 메뉴의 통계를 한 번만 계산해서, 전체 합계 행과 존별 행이 같은 값을 공유한다.
+  const allMenuStats = [...data.designByMenu.values()].map(d => {
+    const r = resultByMenu.get(d.menu_name);
+    const costPerGram = data.costByMenu.get(d.menu_name) ?? d.cost_per_gram;
+    const brandVal = pivotGroupValue(r, allCodes);
+    const brandAmt = (brandVal.grams || 0) * (costPerGram || 0);
+    return { design: d, result: r, costPerGram, brandGrams: brandVal.grams, brandCustomers: brandVal.customers, brandAmt };
+  });
 
   let H = '<thead><tr><th>존 / 메뉴·자재</th>';
   columns.forEach(c => {
@@ -3473,18 +3483,26 @@ function renderPivotCompare() {
   });
   H += '</tr></thead><tbody>';
 
+  // 전체 조닝 합계 행 — 존 합계와 같은 원리로 손님수는 매장군 전체 손님수 하나로 통일한다.
+  {
+    const totalBrandAmt = allMenuStats.reduce((a, m) => a + m.brandAmt, 0);
+    const totalBrandGrams = allMenuStats.reduce((a, m) => a + (m.brandGrams || 0), 0);
+    const totalBrandTxt = pivotValueTxt(mode, totalBrandAmt, totalBrandGrams, brandCol.guests, brandCol.netSales);
+    H += '<tr class="pivot-zone pivot-met"><td>【로운 전체】</td>';
+    columns.forEach(c => {
+      let amt = 0, grams = 0;
+      allMenuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } });
+      const t = pivotValueTxt(mode, amt, grams, c.guests, c.netSales);
+      const badge = c.brand ? '' : pivotDeltaBadge(mode, t.raw, totalBrandTxt.raw);
+      H += `<td>${t.main}${badge}</td>`;
+    });
+    H += '</tr>';
+  }
+
   zonesPresent.forEach(zone => {
-    const menusInZone = [...data.designByMenu.values()].filter(d => d.category === zone);
-    const menuStats = menusInZone.map(d => {
-      const r = resultByMenu.get(d.menu_name);
-      const costPerGram = data.costByMenu.get(d.menu_name) ?? d.cost_per_gram;
-      const brandVal = pivotGroupValue(r, allCodes);
-      const brandAmt = (brandVal.grams || 0) * (costPerGram || 0);
-      return { design: d, result: r, costPerGram, brandGrams: brandVal.grams, brandCustomers: brandVal.customers, brandAmt };
-    }).sort((a, b) => b.brandAmt - a.brandAmt);
+    const menuStats = allMenuStats.filter(m => m.design.category === zone).sort((a, b) => b.brandAmt - a.brandAmt);
     const zoneBrandAmt = menuStats.reduce((a, m) => a + m.brandAmt, 0);
     const zoneBrandGrams = menuStats.reduce((a, m) => a + (m.brandGrams || 0), 0);
-    const brandCol = columns.find(c => c.brand);
     const zoneBrandTxt = pivotValueTxt(mode, zoneBrandAmt, zoneBrandGrams, brandCol.guests, brandCol.netSales);
 
     const zid = zone;
