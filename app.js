@@ -3338,6 +3338,7 @@ function setPivotTab(t) {
   $('#pivotCtlAB').style.display = (t === 'A' || t === 'B') ? '' : 'none';
   $('#pivotCtlC').style.display = t === 'C' ? '' : 'none';
   $('#pivotCtlD').style.display = t === 'D' ? '' : 'none';
+  $('#pivotVeSummary').style.display = t === 'D' ? '' : 'none';
   $('#pivotStoreSelectBox').style.display = t === 'A' ? '' : 'none';
   $('#pivotResetOrderBtn').style.display = t === 'B' ? '' : 'none';
   if (t === 'A' || t === 'B') loadPivotCompareView();
@@ -3937,7 +3938,11 @@ function computeVE() {
 function renderVE() {
   const tbl = $('#pivotTable');
   const F = veFactsCache;
-  if (!F) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">"즉시" 긴급도 메뉴가 없습니다 (메뉴 진단 탭 기준).</td></tr></tbody>'; return; }
+  if (!F) {
+    tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">"즉시" 긴급도 메뉴가 없습니다 (메뉴 진단 탭 기준).</td></tr></tbody>';
+    $('#pivotVeSummary').innerHTML = '';
+    return;
+  }
   const V = computeVE();
   const won = v => v == null ? '—' : Math.round(v).toLocaleString();
   const f1v = v => v == null ? '—' : (Math.round(v * 10) / 10).toLocaleString();
@@ -3953,15 +3958,15 @@ function renderVE() {
     VE_PHASES.map(o => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('') + `</select>`;
   const txt = (menu, v) => `<input class="pivot-ve-in pivot-ve-wide" value="${esc(v || '').replace(/"/g, '&quot;')}" onchange="veSet('${qesc(menu)}','action_plan',this.value)">`;
 
-  // 첫 행이 colspan=12짜리 셀 하나뿐이라 table-layout:fixed가 열 폭을 못 읽어서(첫 열이 찌그러짐),
-  // colgroup으로 명시해준다.
-  let H = `<colgroup><col style="width:250px">` + Array(11).fill('<col>').join('') + `</colgroup>` +
-    `<thead><tr><th colspan="12" style="text-align:left;background:var(--accent-soft)">` +
+  // VE 합계 요약은 표 밖(#pivotVeSummary)에 따로 그린다 — colspan짜리 헤더 행을 표 안에 넣으면
+  // table-layout:fixed가 열 폭(특히 첫 열)을 제대로 못 읽어와서 레이아웃이 깨졌었음.
+  $('#pivotVeSummary').innerHTML =
     `<span class="pivot-vek">VE 합계 <b class="${cl(V.total.d_won)}">${sgn(V.total.d_won, 0)}원/객</b></span>` +
     `<span class="pivot-vek">원가율 <b class="${cl(V.total.d_pp)}">${sgn(V.total.d_pp, 2)}%p</b></span>` +
     `<span class="pivot-vek">현재 <b>${V.rate != null ? V.rate.toFixed(2) : '—'}%</b> → VE 후 <b>${V.total.rate_after != null ? V.total.rate_after.toFixed(2) : '—'}%</b></span>` +
-    (V.targetRatio != null && V.total.rate_after != null ? `<span class="pivot-vek">타겟 ${V.targetRatio.toFixed(1)}%까지 <b class="pivot-ve-bad">${sgn(V.total.rate_after - V.targetRatio, 2)}%p</b></span>` : '') +
-    `</th></tr><tr><th>대상</th><th>존</th><th>AS-IS 원/g</th><th>취식 g/객</th><th>AS-IS 원/객</th>` +
+    (V.targetRatio != null && V.total.rate_after != null ? `<span class="pivot-vek">타겟 ${V.targetRatio.toFixed(1)}%까지 <b class="pivot-ve-bad">${sgn(V.total.rate_after - V.targetRatio, 2)}%p</b></span>` : '');
+
+  let H = `<thead><tr><th>대상</th><th>존</th><th>AS-IS 원/g</th><th>취식 g/객</th><th>AS-IS 원/객</th>` +
     `<th>TO-BE 원/g</th><th>TO-BE 취식g</th><th>TO-BE 원/객</th><th>Δ원/객</th><th>Δ%p</th><th>시점</th><th style="text-align:left">해결 방안</th></tr></thead><tbody>`;
 
   V.rows.forEach(r => {
@@ -3981,7 +3986,7 @@ function renderVE() {
     H += `<tr class="pivot-item"><td style="text-align:left">${esc(c.phase)}</td>` +
       `<td colspan="7" style="text-align:left" class="pivot-ref">그 시점 효과</td>` +
       `<td class="${cl(c.d)}">${sgn(c.d, 0)}</td>` +
-      `<td colspan="2" style="text-align:left">누적 <b class="${cl(c.cum)}">${sgn(c.cum, 0)}원/객</b> → 원가율 <b>${c.rate != null ? c.rate.toFixed(2) : '—'}%</b></td></tr>`;
+      `<td colspan="3" style="text-align:left">누적 <b class="${cl(c.cum)}">${sgn(c.cum, 0)}원/객</b> → 원가율 <b>${c.rate != null ? c.rate.toFixed(2) : '—'}%</b></td></tr>`;
   });
   H += `<tr class="pivot-zone"><td colspan="12" style="text-align:left">【존별 — 타겟 갭이 얼마나 좁혀지나】</td></tr>`;
   V.zones.forEach(z => {
@@ -3990,7 +3995,7 @@ function renderVE() {
       `<td class="${cl(z.gap)}">${sgn(z.gap, 0)}</td>` +
       `<td colspan="2" style="text-align:left" class="pivot-ref">현재 갭</td>` +
       `<td class="${cl(z.d)}">${sgn(z.d, 0)}</td>` +
-      `<td colspan="2" style="text-align:left">VE 후 갭 <b class="${cl(z.gap2)}">${sgn(z.gap2, 0)}원/객</b></td></tr>`;
+      `<td colspan="4" style="text-align:left">VE 후 갭 <b class="${cl(z.gap2)}">${sgn(z.gap2, 0)}원/객</b></td></tr>`;
   });
   H += '</tbody>';
   tbl.innerHTML = H;

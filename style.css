@@ -405,6 +405,7 @@ table { font-variant-numeric: tabular-nums; }
 .pivot-na { color: var(--line-strong); }
 .pivot-legend { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
 
+#pivotVeSummary:not(:empty) { background: var(--accent-soft); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
 .pivot-wrap { overflow: auto; max-height: calc(100vh - 260px); border: 1px solid var(--line); }
 .pivot-table { border-collapse: separate; border-spacing: 0; font-size: 12.5px; width: 100%; table-layout: fixed; }
 .pivot-table th, .pivot-table td { padding: 3px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
