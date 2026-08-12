@@ -3490,9 +3490,11 @@ function renderPivotCompare() {
     const zid = zone;
     H += `<tr class="pivot-zone" onclick="pivotToggle('${esc(zid)}')"><td>${pivotCollapsed[zid] ? '▸' : '▾'} 【${esc(zone)}】</td>`;
     columns.forEach(c => {
-      let amt = 0, grams = 0, customers = 0;
-      menuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } customers += g.customers; });
-      const t = pivotValueTxt(mode, amt, grams, customers, c.netSales);
+      // 존 합계는 메뉴마다 분모(패턴별 손님수)가 달라 그냥 더하면 안 된다 — 그램/금액만 메뉴 합산하고,
+      // 손님수는 그 매장군의 전체 손님수(c.guests) 하나로 통일해서 나눈다(이번 세션 인당소비액 합산 버그와 동일 원리).
+      let amt = 0, grams = 0;
+      menuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } });
+      const t = pivotValueTxt(mode, amt, grams, c.guests, c.netSales);
       const badge = c.brand ? '' : pivotDeltaBadge(mode, t.raw, zoneBrandTxt.raw);
       H += `<td>${t.main}${badge}</td>`;
     });
