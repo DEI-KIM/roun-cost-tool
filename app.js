@@ -1196,6 +1196,7 @@ const CONSUMPTION_SOURCE_LABEL = {
 const COST_SOURCE_LABEL = {
   actual: { label: '실단가', cls: 'pill-good' },
   partial: { label: '일부실단가', cls: 'pill-warn' },
+  estimated: { label: '추정단가(장기평균)', cls: 'pill-warn' },
   design_fallback: { label: '레시피단가', cls: 'pill-crit' },
 };
 
@@ -1992,7 +1993,42 @@ async function buildMaterialPriceResolver(seasonId) {
   const realPricePerGram = new Map(); // 대표코드 -> 원/g (그 달 브랜드 전체 가중평균)
   gramsByCluster.forEach((grams, key) => { if (grams > 0) realPricePerGram.set(key, costByCluster.get(key) / grams); });
 
-  // 레시피 등록 단가(원/kg 기준으로 입력돼있어 1000으로 나눠 원/g로 맞춤)는 실단가 없는 자재의 대체값으로만 사용.
+  // 이번 달 실단가가 없는 자재만, 최근 6개월 구매기록 평균으로 보완한다("헷징" 추정) — 시즌 기간이 짧아서
+  // (예: 1주일치만 등록) 그 안에 안 산 자재가 많을 때, 메뉴 전체가 통째로 계산에서 빠지는 걸 줄이기 위함.
+  // 실단가(이번 달)보다는 신뢰도가 낮지만, 레시피 등록 단가(1회성 수기입력, 검증 안 됨)보다는 실제 구매 근거가
+  // 있어 훨씬 낫다. 시즌 레시피가 실제로 쓰는 자재만 조회해서 material_usage 전체를 훑지 않는다.
+  const codesNeedingExtended = [...new Set((recipeRows || []).map(r => r.material_code))]
+    .filter(c => c && !realPricePerGram.has(find(c)));
+  const extendedPricePerGram = new Map();
+  if (codesNeedingExtended.length) {
+    const sixMonthsAgoDate = new Date(latestMonth);
+    sixMonthsAgoDate.setMonth(sixMonthsAgoDate.getMonth() - 6);
+    const sixMonthsAgo = sixMonthsAgoDate.toISOString().slice(0, 10);
+    let extRows = [];
+    const CH = 25;
+    for (let i = 0; i < codesNeedingExtended.length; i += CH) {
+      const batch = codesNeedingExtended.slice(i, i + CH);
+      const { data } = await fetchAllRows(
+        'material_usage',
+        q => q.in('material_code', batch).gte('usage_month', sixMonthsAgo).lt('usage_month', latestMonth),
+        'material_code, actual_usage_qty, actual_usage_amount, conversion_factor'
+      );
+      extRows = extRows.concat(data || []);
+    }
+    const gByCluster = new Map(), cByCluster = new Map();
+    extRows.forEach(r => {
+      if (!r.material_code || !r.actual_usage_qty) return;
+      const grams = Number(r.actual_usage_qty) * (Number(r.conversion_factor) || 0);
+      if (!grams) return;
+      const key = find(r.material_code);
+      gByCluster.set(key, (gByCluster.get(key) || 0) + grams);
+      cByCluster.set(key, (cByCluster.get(key) || 0) + (Number(r.actual_usage_amount) || 0));
+    });
+    gByCluster.forEach((grams, key) => { if (grams > 0) extendedPricePerGram.set(key, cByCluster.get(key) / grams); });
+  }
+
+  // 레시피 등록 단가(원/kg 기준으로 입력돼있어 1000으로 나눠 원/g로 맞춤)는 실단가·장기평균 둘 다 없는
+  // 자재의 마지막 대체값으로만 사용.
   const fallbackPriceByCode = new Map();
   (recipeRows || []).forEach(r => {
     if (r.material_code && r.material_price != null && !fallbackPriceByCode.has(r.material_code)) {
@@ -2002,13 +2038,15 @@ async function buildMaterialPriceResolver(seasonId) {
 
   function priceForCode(code) {
     const real = realPricePerGram.get(find(code));
-    if (real != null) return { price: real, isReal: true };
+    if (real != null) return { price: real, isReal: true, isExtended: false };
+    const ext = extendedPricePerGram.get(find(code));
+    if (ext != null) return { price: ext, isReal: false, isExtended: true };
     const fb = fallbackPriceByCode.get(code);
-    if (fb != null) return { price: fb, isReal: false };
+    if (fb != null) return { price: fb, isReal: false, isExtended: false };
     return null;
   }
 
-  return { priceForCode, find, realPricePerGram, fallbackPriceByCode, costMonth: latestMonth };
+  return { priceForCode, find, realPricePerGram, extendedPricePerGram, fallbackPriceByCode, costMonth: latestMonth };
 }
 
 // 메뉴별 "실제 g당원가"를 계산한다. buildMaterialPriceResolver로 얻은 자재별 단가를 레시피 BOM에 곱해
@@ -2027,25 +2065,28 @@ async function computeActualCostPerGram(seasonId) {
     const cookedWeight = cookedWeightByMenu.get(menu);
     if (!bom?.size || !cookedWeight) return { menu_name: menu, actual_cost_per_gram: null, cost_source: null };
 
-    let totalCost = 0, totalGrams = 0, realGrams = 0;
+    let totalCost = 0, totalGrams = 0, realGrams = 0, groundedGrams = 0;
     bom.forEach((grams, code) => {
       totalGrams += grams;
       const p = priceForCode(code);
       if (!p) return;
       totalCost += grams * p.price;
       if (p.isReal) realGrams += grams;
+      if (p.isReal || p.isExtended) groundedGrams += grams;
     });
 
-    // "실단가로 확보된" 비중이 95% 미만이면(레시피 등록 단가로 대체된 부분이 5%를 넘으면) 신뢰할 수 없다고 보고 비워둔다.
-    // (레시피 등록 단가는 최초 1회성 수기입력이라 검증된 적이 없어서, 대체 비중이 크면 엉뚱한 값을 그대로 실적에 반영하게 됨)
+    // "실제 구매 근거(이번 달 실단가 + 장기평균 헷징단가)로 확보된" 비중이 95% 미만이면(근거 없는 레시피
+    // 등록 단가로 대체된 부분이 5%를 넘으면) 신뢰할 수 없다고 보고 비워둔다. (레시피 등록 단가는 최초
+    // 1회성 수기입력이라 검증된 적이 없어서, 대체 비중이 크면 엉뚱한 값을 그대로 실적에 반영하게 됨)
     const realRatio = totalGrams > 0 ? realGrams / totalGrams : 0;
-    if (totalGrams <= 0 || realRatio < 0.95) {
+    const groundedRatio = totalGrams > 0 ? groundedGrams / totalGrams : 0;
+    if (totalGrams <= 0 || groundedRatio < 0.95) {
       return { menu_name: menu, actual_cost_per_gram: null, cost_source: null };
     }
     return {
       menu_name: menu,
       actual_cost_per_gram: totalCost / cookedWeight,
-      cost_source: realRatio >= 0.999 ? 'actual' : 'partial',
+      cost_source: realRatio >= 0.999 ? 'actual' : (realRatio >= 0.95 ? 'partial' : 'estimated'),
     };
   });
 
