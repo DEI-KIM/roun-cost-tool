@@ -3839,7 +3839,13 @@ let veFactsCache = null;
 let vePlanCache = [];
 
 async function buildVeFacts() {
-  const urgentRows = (menuDiagnosisCache.diagRows || []).filter(r => r.tier === '즉시');
+  // menuDiagnosisCache는 "메뉴 진단" 탭이나 시즌 로드가 먼저 끝나야 채워지는 다른 탭의 캐시라 —
+  // 피벗④를 그보다 먼저 열면(시즌 갓 전환한 직후 등) 비어있을 수 있다. 여기서 직접 최신으로 다시 계산해서
+  // 로드 순서에 의존하지 않게 한다.
+  await loadMenuConsumptionView();
+  const { diagRows } = computeMenuDiagnosisQuadrants(menuConsumptionRowsCache);
+  computeUrgencyTiers(diagRows);
+  const urgentRows = diagRows.filter(r => r.tier === '즉시');
   if (!urgentRows.length) return null;
   const urgentNames = urgentRows.map(r => r.menu_name);
   const { data: consRows } = await fetchAllRows(
