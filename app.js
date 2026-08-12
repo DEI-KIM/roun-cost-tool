@@ -1815,17 +1815,19 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
   // 매장 수만큼 IPF를 반복 계산하느라 시간이 걸려서, 매장 사이마다 한 틱씩 양보해 브라우저가 멈춘 것처럼 보이지 않게 하고
   // 진행 상황을 onProgress로 알려준다.
   const perStore = [];
-  for (let i = 0; i < storeCodes.length; i++) {
-    const storeCode = storeCodes[i];
-    if (onProgress) onProgress(i + 1, storeCodes.length, storeMap.get(storeCode));
-    await new Promise(r => setTimeout(r, 0));
-    const actualByMaterial = buildActualByMaterial(usageByStore.get(storeCode) || []);
-    const { gramsProducedByMenu, sourceByMenu, confidenceByMenu } = estimateGramsProduced(recipeCtx, actualByMaterial, () => {});
-    perStore.push({
-      store_code: storeCode, store_name: storeMap.get(storeCode), store_type: storeType(storeCode),
-      customersByPattern: customersByStorePattern.get(storeCode) || emptyPatternBucket(),
-      gramsProducedByMenu, sourceByMenu, confidenceByMenu,
-    });
+  if (!brandOnly) {
+    for (let i = 0; i < storeCodes.length; i++) {
+      const storeCode = storeCodes[i];
+      if (onProgress) onProgress(i + 1, storeCodes.length, storeMap.get(storeCode));
+      await new Promise(r => setTimeout(r, 0));
+      const actualByMaterial = buildActualByMaterial(usageByStore.get(storeCode) || []);
+      const { gramsProducedByMenu, sourceByMenu, confidenceByMenu } = estimateGramsProduced(recipeCtx, actualByMaterial, () => {});
+      perStore.push({
+        store_code: storeCode, store_name: storeMap.get(storeCode), store_type: storeType(storeCode),
+        customersByPattern: customersByStorePattern.get(storeCode) || emptyPatternBucket(),
+        gramsProducedByMenu, sourceByMenu, confidenceByMenu,
+      });
+    }
   }
 
   // ---- 브랜드 전체(전 매장 실사용량 합)는 안전망 용도로만 계산 — 모든 매장에서 데이터없음인 메뉴에 한해 설계값 대체 ----
