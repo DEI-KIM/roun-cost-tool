@@ -26,14 +26,20 @@ async function fetchAllRows(table, applyFilters, selectCols = '*') {
   const { data: firstPage, error: firstErr, count } = await buildQuery(true).range(0, pageSize - 1);
   if (firstErr) return { data: null, error: firstErr };
   let all = firstPage || [];
-  // 총 개수를 알면 남은 페이지들을 한번에 병렬로 가져온다(순차 대기 없이) — 큰 표(예: 자재사용량)에서 효과 큼
+  // 총 개수를 알면 남은 페이지들을 병렬로 가져온다(순차 대기 없이) — 큰 표(예: 자재사용량)에서 효과 큼.
+  // 단, 한꺼번에 수백 개를 다 쏘면(예: market_prices 30만행) 브라우저 연결이 몰려 오히려 다른 요청이 굶는다 —
+  // CONCURRENCY만큼씩 묶어서 처리.
+  const CONCURRENCY = 8;
   if (typeof count === 'number' && all.length >= pageSize && all.length < count) {
     const pageFroms = [];
     for (let from = pageSize; from < count; from += pageSize) pageFroms.push(from);
-    const rest = await Promise.all(pageFroms.map(from => buildQuery(false).range(from, from + pageSize - 1)));
-    for (const r of rest) {
-      if (r.error) return { data: null, error: r.error };
-      all = all.concat(r.data || []);
+    for (let i = 0; i < pageFroms.length; i += CONCURRENCY) {
+      const batch = pageFroms.slice(i, i + CONCURRENCY);
+      const rest = await Promise.all(batch.map(from => buildQuery(false).range(from, from + pageSize - 1)));
+      for (const r of rest) {
+        if (r.error) return { data: null, error: r.error };
+        all = all.concat(r.data || []);
+      }
     }
   }
   return { data: all, error: null };
