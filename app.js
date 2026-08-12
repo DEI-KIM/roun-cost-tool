@@ -663,16 +663,20 @@ async function renderTargetCostLog() {
 $('#targetCostSeasonFilter').addEventListener('change', renderTargetCostLog);
 
 // 월별 실적 원가율 추이 (전체 시즌의 자재사용량·매출을 월 단위로 묶어 계산 — 시즌 경계와 무관하게 흐름을 보여줌)
+// 자재사용량이 27만 행이 넘어서 예전엔 전체를 다 받아와 브라우저에서 월별로 더했음 — 시즌 전환할 때마다
+// 100초 넘게 걸리며 다른 모든 요청을 굶기던 원인. DB에 만든 집계 함수(material_usage_monthly_totals)로
+// 월별 합계만 받아오도록 바꿈.
 async function loadCostTrend() {
-  const [{ data: usage }, { data: sales }] = await Promise.all([
-    fetchAllRows('material_usage', null, 'usage_month, actual_usage_amount'),
+  const [{ data: usage, error: usageErr }, { data: sales }] = await Promise.all([
+    sb.rpc('material_usage_monthly_totals'),
     fetchAllRows('store_sales', null, 'sales_date, sales_total'),
   ]);
+  if (usageErr) console.error(usageErr);
   const costByMonth = {}, salesByMonth = {};
   (usage || []).forEach(r => {
     const m = (r.usage_month || '').slice(0, 7);
     if (!m) return;
-    costByMonth[m] = (costByMonth[m] || 0) + (Number(r.actual_usage_amount) || 0);
+    costByMonth[m] = (costByMonth[m] || 0) + (Number(r.total_amount) || 0);
   });
   (sales || []).forEach(r => {
     const m = (r.sales_date || '').slice(0, 7);
