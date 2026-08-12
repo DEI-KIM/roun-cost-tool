@@ -265,9 +265,12 @@ function renderSeasonRangeInputs() {
 // 시즌 범위 날짜 선택 — 재고실사 주기(매주 월요일 + 매달 말일)에 안 맞는 날짜를 실수로 고르면
 // 자재사용량(주 단위)과 매출(일 단위)의 반영 구간이 어긋나서 실적이 왜곡된다(2026-08-12 발견 사례).
 // EATS 시스템의 날짜 선택 화면처럼, 유효한 날짜만 클릭 가능한 팝업 달력으로 원천 차단한다.
-function isSeasonCutoffDate(d) {
+// 종료일(재고실사일 자체) = 월요일 또는 말일. 시작일(그 다음 실사 구간의 첫날) = 화요일 또는 말일.
+function isSeasonCutoffDate(d, kind) {
   const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  return d.getDay() === 1 || d.getDate() === lastDay; // 월요일 또는 말일
+  const isMonthEnd = d.getDate() === lastDay;
+  if (kind === 'start') return d.getDay() === 2 || isMonthEnd; // 화요일 또는 말일
+  return d.getDay() === 1 || isMonthEnd; // 월요일 또는 말일
 }
 let seasonDatePickerState = null;
 function closeSeasonDatePicker() {
@@ -299,7 +302,7 @@ function renderSeasonDatePickerCalendar() {
   for (let day = 1; day <= daysInMonth; day++) {
     const d = new Date(viewYear, viewMonth, day);
     const dateStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    const valid = isSeasonCutoffDate(d);
+    const valid = isSeasonCutoffDate(d, seasonDatePickerState.kind);
     const cls = ['date-popup-day'];
     if (!valid) cls.push('is-disabled');
     if (dateStr === selectedStr) cls.push('is-selected');
@@ -326,11 +329,11 @@ function renderSeasonDatePickerCalendar() {
     });
   });
 }
-function openSeasonDatePicker(inputEl) {
+function openSeasonDatePicker(inputEl, kind) {
   const existing = inputEl.value;
   const [y, m, d] = existing ? existing.split('-').map(Number) : [null, null, null];
   const base = existing ? new Date(y, m - 1, d) : new Date();
-  seasonDatePickerState = { targetInput: inputEl, viewYear: base.getFullYear(), viewMonth: base.getMonth() };
+  seasonDatePickerState = { targetInput: inputEl, kind, viewYear: base.getFullYear(), viewMonth: base.getMonth() };
   renderSeasonDatePickerCalendar();
   const popup = $('#seasonDatePopup');
   popup.style.display = 'block';
@@ -342,8 +345,8 @@ function openSeasonDatePicker(inputEl) {
 }
 
 function setupSeasonControls() {
-  $('#seasonStartMonth').addEventListener('click', () => openSeasonDatePicker($('#seasonStartMonth')));
-  $('#seasonEndMonth').addEventListener('click', () => openSeasonDatePicker($('#seasonEndMonth')));
+  $('#seasonStartMonth').addEventListener('click', () => openSeasonDatePicker($('#seasonStartMonth'), 'start'));
+  $('#seasonEndMonth').addEventListener('click', () => openSeasonDatePicker($('#seasonEndMonth'), 'end'));
 
   $('#seasonSelect').addEventListener('change', async (e) => {
     state.currentSeasonId = Number(e.target.value);
@@ -3396,20 +3399,26 @@ async function loadPivotCompareData() {
 }
 
 // storeCodes에 속한 매장들의 실제 그램·손님수를 합산 (데이터 있는 매장만 그램에 반영, 손님수는 항상 반영).
+// storeCodes 중 일부 매장에만 실사용 데이터가 있으면(예: 신규 자재라 몇 매장만 보고), 그 매장들만의
+// 인당소비율(rate)을 그룹 전체 손님수로 확장해서 추정한다 — 데이터 있는 매장 grams만 그대로 더하고
+// 데이터 유무와 무관한 그룹 전체 손님수로 나누면 분자가 과소해져 값이 실제보다 크게 깎인다
+// (이번 세션에 브랜드 실적 원가율에서 발견해 고쳤던 것과 같은 문제, 피벗 탭에도 동일하게 적용).
 function pivotGroupValue(menuResult, storeCodes) {
-  let grams = 0, customers = 0, any = false;
+  let measuredGrams = 0, measuredCustomers = 0, totalCustomers = 0, any = false;
   (menuResult?.per_store || []).forEach(s => {
     if (!storeCodes.includes(s.store_code)) return;
-    customers += s.store_customers || 0;
-    if (s.grams != null) { grams += s.grams; any = true; }
+    totalCustomers += s.store_customers || 0;
+    if (s.grams != null) { measuredGrams += s.grams; measuredCustomers += s.store_customers || 0; any = true; }
   });
-  return { grams: any ? grams : null, customers };
+  if (!any || measuredCustomers <= 0) return { grams: null, customers: totalCustomers };
+  const rate = measuredGrams / measuredCustomers;
+  return { grams: rate * totalCustomers, customers: totalCustomers };
 }
 function pivotValueTxt(mode, amt, grams, customers, netSales) {
   let raw, main;
   if (mode === 'g') { raw = (customers && grams != null) ? grams / customers : null; main = raw == null ? '—' : fmtNum(raw, 1); }
   else if (mode === 'pg') { raw = customers ? amt / customers : null; main = raw == null ? '—' : fmtNum(raw, 0); }
-  else if (mode === 'pp') { raw = netSales ? amt / netSales * 100 : null; main = raw == null ? '—' : raw.toFixed(2); }
+  else if (mode === 'pp') { raw = netSales ? amt / netSales * 100 : null; main = raw == null ? '—' : raw.toFixed(1) + '%'; }
   else { raw = amt / 1e6; main = fmtNum(raw, 1); }
   return { raw, main };
 }
