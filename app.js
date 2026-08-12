@@ -275,7 +275,10 @@ function renderSeasonRangeInputs() {
 function isSeasonCutoffDate(d, kind) {
   const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
   const isMonthEnd = d.getDate() === lastDay;
-  if (kind === 'start') return d.getDay() === 2 || isMonthEnd; // 화요일 또는 말일
+  const isMonthStart = d.getDate() === 1;
+  // 종료일(월요일 또는 말일) 다음날이 시작일이어야 하므로: 월요일 다음날=화요일, 말일 다음날=1일.
+  // (예전엔 시작일도 "말일"을 허용해서 직전 시즌 종료일과 겹치는 하루가 생겼었음 — 화요일/1일로 수정)
+  if (kind === 'start') return d.getDay() === 2 || isMonthStart; // 화요일 또는 1일
   return d.getDay() === 1 || isMonthEnd; // 월요일 또는 말일
 }
 let seasonDatePickerState = null;
