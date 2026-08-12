@@ -417,7 +417,7 @@ table { font-variant-numeric: tabular-nums; }
 /* 존/메뉴·자재 이름 열은 내용에 맞춰 좁게 고정하고(table-layout:fixed), 나머지 값 열들이 남은 폭을 균등하게 나눠 쓰게 함 */
 .pivot-table td:first-child, .pivot-table th:first-child {
   position: sticky; left: 0; background: var(--surface); z-index: 2; text-align: left;
-  border-right: 1px solid var(--line); width: 230px; overflow: hidden; text-overflow: ellipsis;
+  border-right: 1px solid var(--line); width: 250px; overflow: hidden; text-overflow: ellipsis;
 }
 .pivot-table tr.pivot-zone td { background: var(--accent-soft); font-weight: 700; cursor: pointer; }
 .pivot-table tr.pivot-zone td:first-child { background: var(--accent-soft); }
