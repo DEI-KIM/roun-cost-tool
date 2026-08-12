@@ -2001,13 +2001,29 @@ async function buildMaterialPriceResolver(seasonId) {
     .filter(c => c && !realPricePerGram.has(find(c)));
   const extendedPricePerGram = new Map();
   if (codesNeedingExtended.length) {
+    // 별칭그룹 대표코드만으로 조회하면 실제 구매기록은 "별칭"(예: 배추(국산,직송)) 쪽에 있어서 놓친다 —
+    // 같은 클러스터에 속한 자재코드를 전부 모아서 조회해야 한다.
+    const clusterMembers = new Map(); // 대표코드 -> 그 그룹에 속한 모든 원본 코드
+    (confirmedAliases || []).forEach(a => {
+      [a.primary_material_code, a.alt_material_code].forEach(code => {
+        const root = find(code);
+        if (!clusterMembers.has(root)) clusterMembers.set(root, new Set());
+        clusterMembers.get(root).add(code);
+      });
+    });
+    const expandedCodes = new Set();
+    codesNeedingExtended.forEach(c => {
+      expandedCodes.add(c);
+      (clusterMembers.get(find(c)) || []).forEach(m => expandedCodes.add(m));
+    });
+    const expandedList = [...expandedCodes];
     const sixMonthsAgoDate = new Date(latestMonth);
     sixMonthsAgoDate.setMonth(sixMonthsAgoDate.getMonth() - 6);
     const sixMonthsAgo = sixMonthsAgoDate.toISOString().slice(0, 10);
     let extRows = [];
     const CH = 25;
-    for (let i = 0; i < codesNeedingExtended.length; i += CH) {
-      const batch = codesNeedingExtended.slice(i, i + CH);
+    for (let i = 0; i < expandedList.length; i += CH) {
+      const batch = expandedList.slice(i, i + CH);
       const { data } = await fetchAllRows(
         'material_usage',
         q => q.in('material_code', batch).gte('usage_month', sixMonthsAgo).lt('usage_month', latestMonth),
