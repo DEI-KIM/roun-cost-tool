@@ -3273,5 +3273,48 @@ function cleanPastedValue(raw, inputType) {
   return cleaned !== '' && !Number.isNaN(Number(cleaned)) ? cleaned : '';
 }
 
+// =====================================================================
+// Tab: 피벗 (조닝→메뉴→자재 3축) — 시즌과 무관하게 전체 기간을 다룬다.
+// 사장님이 주신 참고 피벗 도구(로컬 HTML)의 UI/UX를 이식하되, 데이터는 그 도구의 오프라인
+// 배치 파이프라인이 아니라 우리 앱의 실시간 계산 엔진(computeMenuConsumption 등)을 재사용한다.
+// 1단계(뼈대): 안쪽 탭 전환 + 기간 컨트롤 기본값만 — 실제 표 렌더는 다음 단계에서 연결한다.
+// =====================================================================
+let pivotTab = 'A';
+function setPivotTab(t) {
+  pivotTab = t;
+  $$('.pivot-tab-btn').forEach(b => b.classList.toggle('is-on', b.dataset.pivotTab === t));
+  $('#pivotCtlAB').style.display = (t === 'A' || t === 'B') ? '' : 'none';
+  $('#pivotCtlC').style.display = t === 'C' ? '' : 'none';
+  $('#pivotCtlD').style.display = t === 'D' ? '' : 'none';
+  $('#pivotStoreSelectBox').style.display = t === 'A' ? '' : 'none';
+  $('#pivotResetOrderBtn').style.display = t === 'B' ? '' : 'none';
+  // TODO(2단계 이후): loadPivotCompareView / loadPivotTimeSeriesView / loadPivotVEView 연결
+}
+$$('.pivot-tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => setPivotTab(btn.dataset.pivotTab));
+});
+
+function renderPivotWeekOptions() {
+  const monthValue = $('#pivotMonthInput').value;
+  const sel = $('#pivotWeekSelect');
+  if (!monthValue) { sel.innerHTML = ''; return; }
+  const [y, m] = monthValue.split('-').map(Number);
+  const weeks = computeWeekOptionsForMonth(y, m);
+  sel.innerHTML = weeks.map(w => `<option value="${w.periodStart}|${w.periodEnd}">${w.label}</option>`).join('');
+  if (weeks.length) sel.value = `${weeks[weeks.length - 1].periodStart}|${weeks[weeks.length - 1].periodEnd}`;
+}
+function updatePivotUnitVisibility() {
+  const isWeek = $('#pivotUnitSelect').value === 'w';
+  $('#pivotWeekSelect').style.display = isWeek ? '' : 'none';
+}
+(() => {
+  const now = new Date();
+  $('#pivotMonthInput').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  renderPivotWeekOptions();
+  updatePivotUnitVisibility();
+})();
+$('#pivotMonthInput').addEventListener('change', renderPivotWeekOptions);
+$('#pivotUnitSelect').addEventListener('change', updatePivotUnitVisibility);
+
 // ---------- Start ----------
 initAuth();

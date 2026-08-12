@@ -377,3 +377,67 @@ table { font-variant-numeric: tabular-nums; }
 @media (max-width: 900px) {
   .app-header { flex-wrap: wrap; }
 }
+
+/* ── 피벗 탭 (조닝→메뉴→자재 3축) — 참고 레퍼런스 스타일을 우리 CSS 변수로 이식 ── */
+.pivot-tabs { display: flex; gap: 2px; margin: 8px 0 0; border-bottom: 2px solid var(--ink); }
+.pivot-tab-btn {
+  font: 13px inherit; font-weight: 700; padding: 6px 16px; border: 1px solid var(--line); border-bottom: none;
+  border-radius: 6px 6px 0 0; background: var(--paper); color: var(--muted); cursor: pointer;
+}
+.pivot-tab-btn.is-on { background: var(--accent-soft); color: var(--ink); border-color: var(--accent); }
+.pivot-ctl { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0; font-size: 12.5px; }
+.pivot-ctl label { color: var(--muted); }
+.pivot-ctl select, .pivot-ctl input {
+  font: 12.5px inherit; padding: 4px 8px; border: 1.5px solid var(--accent); border-radius: 4px;
+  background: var(--accent-soft); color: var(--ink); font-weight: 700; cursor: pointer;
+}
+.pivot-btn {
+  font: 12px inherit; padding: 3px 8px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--paper); color: var(--muted); cursor: pointer;
+}
+.pivot-note { color: var(--muted); font-size: 11.5px; }
+.pivot-d { font-size: 11px; color: var(--muted); }
+.pivot-d.hi { color: var(--crit); font-weight: 600; }
+.pivot-d.lo { color: var(--accent); font-weight: 600; }
+.pivot-ref { color: var(--muted); font-style: italic; }
+.pivot-seas { color: var(--accent-deep); font-weight: 700; }
+.pivot-badge { font-size: 10.5px; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--muted); font-weight: 400; }
+.pivot-na { color: var(--line-strong); }
+.pivot-legend { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+
+.pivot-wrap { overflow: auto; max-height: calc(100vh - 260px); border: 1px solid var(--line); }
+.pivot-table { border-collapse: separate; border-spacing: 0; font-size: 12.5px; width: 100%; }
+.pivot-table th, .pivot-table td { padding: 3px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.pivot-table thead th {
+  position: sticky; top: 0; background: var(--paper); z-index: 3; border-bottom: 2px solid var(--ink);
+  text-align: right; font-size: 12px;
+}
+.pivot-table thead th:first-child { text-align: left; z-index: 4; }
+.pivot-table td { text-align: right; font-variant-numeric: tabular-nums; }
+.pivot-table td:first-child, .pivot-table th:first-child {
+  position: sticky; left: 0; background: var(--surface); z-index: 2; text-align: left;
+  border-right: 1px solid var(--line); max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+}
+.pivot-table tr.pivot-zone td { background: var(--accent-soft); font-weight: 700; cursor: pointer; }
+.pivot-table tr.pivot-zone td:first-child { background: var(--accent-soft); }
+.pivot-table tr.pivot-menu td:first-child { padding-left: 22px; cursor: pointer; }
+.pivot-table tr.pivot-item td:first-child { padding-left: 22px; }
+.pivot-table tr.pivot-item td { color: var(--muted); }
+.pivot-table tr.pivot-menu:hover td { background: var(--paper); }
+.pivot-table tr.pivot-met td { font-weight: 600; }
+.pivot-table tr.pivot-ing td { font-size: 11.5px; color: var(--muted); background: var(--paper); }
+.pivot-table tr.pivot-ing td:first-child { padding-left: 40px; }
+
+/* VE 편집 */
+.pivot-ve-in { font: 12px inherit; padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); width: 78px; text-align: right; }
+.pivot-ve-in.pivot-ve-wide { width: 100%; min-width: 220px; text-align: left; }
+select.pivot-ve-in { width: auto; text-align: left; }
+.pivot-ve-in:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.pivot-ve-btn { font: 12px inherit; font-weight: 600; padding: 3px 9px; cursor: pointer; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); }
+.pivot-ve-btn.del { padding: 1px 7px; color: var(--muted); }
+.pivot-ve-btn.del:hover { color: var(--crit); border-color: var(--crit); }
+.pivot-ve-warn { margin-top: 6px; color: var(--crit); font-weight: 700; font-size: 12.5px; }
+.pivot-ve-good { color: var(--good); font-weight: 700; }
+.pivot-ve-bad { color: var(--crit); font-weight: 700; }
+.pivot-vek { display: inline-block; margin-right: 22px; font-weight: 400; color: var(--muted); }
+.pivot-vek b { font-size: 15px; color: var(--ink); margin-left: 5px; }

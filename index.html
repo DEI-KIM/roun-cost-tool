@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>로운 원가설계판</title>
-<link rel="stylesheet" href="style.css?v=202608112300">
+<link rel="stylesheet" href="style.css?v=202608112400">
 </head>
 <body>
 
@@ -49,6 +49,7 @@
 
   <nav class="tab-nav">
     <button class="tab-btn is-active" data-tab="dashboard">대시보드</button>
+    <button class="tab-btn" data-tab="pivot">피벗</button>
     <button class="tab-btn" data-tab="target-cost">목표원가</button>
     <button class="tab-btn" data-tab="input">설계원가</button>
     <button class="tab-btn" data-tab="bom">레시피 등록</button>
@@ -115,6 +116,55 @@
         </div>
         <div id="costTrendChartWrap"></div>
       </div>
+    </section>
+
+    <!-- Tab: 피벗 (조닝→메뉴→자재 3축, 시즌과 무관하게 전체 기간) -->
+    <section id="tab-pivot" class="tab-panel">
+      <div class="panel-head">
+        <h2>조닝→메뉴→자재 피벗</h2>
+        <p class="panel-sub">존·메뉴·자재를 브랜드/매장군/매장 단위로 나란히 비교합니다. 시즌 선택과 무관하게 전체 기간을 다룹니다.</p>
+      </div>
+
+      <div class="pivot-tabs">
+        <button class="pivot-tab-btn is-on" data-pivot-tab="A" type="button">① 비교 (브랜드·모델·매장)</button>
+        <button class="pivot-tab-btn" data-pivot-tab="B" type="button">② 전 매장</button>
+        <button class="pivot-tab-btn" data-pivot-tab="C" type="button">③ 시계열</button>
+        <button class="pivot-tab-btn" data-pivot-tab="D" type="button">④ VE (AS-IS→TO-BE)</button>
+      </div>
+
+      <div class="pivot-ctl" id="pivotCtlAB">
+        <label>단위:</label>
+        <select id="pivotUnitSelect">
+          <option value="w">주차별</option>
+          <option value="m">월별</option>
+        </select>
+        <label>연월:</label>
+        <input type="month" id="pivotMonthInput">
+        <select id="pivotWeekSelect"></select>
+        <label>구분:</label>
+        <select id="pivotModeSelect">
+          <option value="pg">인당금액 원/객</option>
+          <option value="g">인당소비량 g/객</option>
+          <option value="pp">원가율 %(순매출)</option>
+          <option value="amt">금액(백만)</option>
+        </select>
+        <span id="pivotStoreSelectBox"><label>매장 열:</label><select id="pivotStoreSelect"></select></span>
+        <button id="pivotResetOrderBtn" class="pivot-btn" type="button" style="display:none">매장 순서 초기화</button>
+        <span class="pivot-note" id="pivotNoteAB">셀: 값 <span class="pivot-d">(vs브랜드 ±%)</span> · <span class="pivot-d hi">빨강</span>=+15%↑ <span class="pivot-d lo">파랑</span>=−15%↓ · 존/메뉴 행 클릭=접기/펼치기</span>
+      </div>
+      <div class="pivot-ctl" id="pivotCtlC" style="display:none">
+        <label>대상:</label><select id="pivotTsTargetSelect"><option value="brand">브랜드 전체</option></select>
+        <label>단위:</label><select id="pivotTsUnitSelect"><option value="m">월별</option><option value="w">주차별</option></select>
+        <label>시작:</label><select id="pivotTsFromSelect"></select>
+        <label>값:</label><select id="pivotTsModeSelect"><option value="pg">인당소비액</option><option value="g">인당소비량</option><option value="pp">원가율</option></select>
+      </div>
+      <div class="pivot-ctl" id="pivotCtlD" style="display:none">
+        <span class="pivot-note">대상: 메뉴 진단 "즉시" 긴급도 메뉴 · TO-BE 칸을 수정하면 Δ원/객·Δ%p가 바로 재계산됩니다.</span>
+      </div>
+
+      <div class="pivot-wrap"><table class="pivot-table" id="pivotTable">
+        <tbody><tr><td style="padding:24px;color:var(--muted)">준비 중입니다 — 다음 단계에서 데이터가 채워집니다.</td></tr></tbody>
+      </table></div>
     </section>
 
     <!-- Tab: 목표원가 -->
@@ -645,6 +695,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608112300"></script>
+<script src="app.js?v=202608112400"></script>
 </body>
 </html>
