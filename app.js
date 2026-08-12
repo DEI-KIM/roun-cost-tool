@@ -1677,8 +1677,27 @@ function estimateGramsProduced({ flatByMenu, cookedWeightByMenu, finalMenus, fin
 // 메뉴별 인당소비량을 "매장별로 먼저 취합한 뒤 브랜드로 합산"하는 방식으로 계산한다.
 // (예전에는 전 매장 실사용량을 하나로 합쳐서 한 번에 배분했는데, 그러면 디너/주말 메뉴가 덜 들어가는 일부
 //  매장의 편차가 브랜드 평균에 왜곡되어 반영되고, 매장별 이상값도 구분할 수 없었음)
-async function computeMenuConsumption(onProgress) {
-  const seasonId = state.currentSeasonId;
+// dateRange({start,end}, 둘 다 'YYYY-MM-DD')를 주면 시즌 선택과 무관하게 그 기간의 자재사용량·매출로 계산한다
+// (피벗 탭 전용 — 레시피/설계원가는 그 기간을 포함하는 시즌 것을 자동으로 찾아 쓴다).
+// 생략하면 기존처럼 현재 선택된 시즌 기준으로 계산한다(기존 호출부는 전부 이 경로 그대로).
+function findSeasonIdForDate(dateStr) {
+  if (!dateStr) return null;
+  const hit = state.seasons.find(s => s.start_month && s.end_month && s.start_month <= dateStr && dateStr <= s.end_month);
+  if (hit) return hit.id;
+  // 그 기간을 정확히 포함하는 시즌이 없으면(신설 시즌 경계 밖 등) 시작월이 가장 늦은 시즌으로 대체한다.
+  const withRange = state.seasons.filter(s => s.start_month);
+  if (!withRange.length) return state.currentSeasonId;
+  return withRange.reduce((a, b) => (a.start_month > b.start_month ? a : b)).id;
+}
+async function computeMenuConsumption(onProgress, dateRange) {
+  let seasonId, applyRange;
+  if (dateRange) {
+    seasonId = findSeasonIdForDate(dateRange.end);
+    applyRange = (q, field) => q.gte(field, dateRange.start).lt(field, nextDay(dateRange.end));
+  } else {
+    seasonId = state.currentSeasonId;
+    applyRange = (q, field) => applySeasonDateFilter(q, field);
+  }
   if (!seasonId) return { error: '시즌이 선택되지 않았습니다.' };
 
   const flat = await flattenRecipesForSeason(seasonId);
@@ -1686,8 +1705,8 @@ async function computeMenuConsumption(onProgress) {
   const { flatByMenu, cookedWeightByMenu, finalMenus, availabilityPatternByMenu } = flat;
 
   const [{ data: usageRows, error: usageErr }, { data: salesRows, error: salesErr }, { data: designRows }, aliasRes] = await Promise.all([
-    fetchAllRows('material_usage', q => applySeasonDateFilter(q, 'period_end')),
-    fetchAllRows('store_sales', q => applySeasonDateFilter(q, 'sales_date')),
+    fetchAllRows('material_usage', q => applyRange(q, 'period_end')),
+    fetchAllRows('store_sales', q => applyRange(q, 'sales_date')),
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
   ]);
