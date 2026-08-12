@@ -173,8 +173,9 @@ async function bootApp() {
   setupSeasonControls();
   setupDatalist();
   await loadAllForCurrentSeason();
-  await loadMarketView(); // 시장 데이터는 시즌과 무관하므로 한 번만 로드
   await loadBomView(); // 레시피도 시즌과 무관하므로 한 번만 로드
+  // 시장 데이터(market_prices)는 30만 행이 넘어서 매번 부팅할 때마다 통째로 받아오면
+  // 다른 탭들 로딩과 계속 경합한다 — "시장 데이터" 탭을 실제로 열 때만 불러오게 미룬다.
 }
 
 function setupDatalist() {
@@ -408,6 +409,7 @@ async function loadAllForCurrentSeason() {
 }
 
 // ---------- Tab navigation ----------
+let marketViewLoaded = false;
 function setupTabNav() {
   $$('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -415,6 +417,10 @@ function setupTabNav() {
       $$('.tab-panel').forEach(p => p.classList.remove('is-active'));
       btn.classList.add('is-active');
       $(`#tab-${btn.dataset.tab}`).classList.add('is-active');
+      if (btn.dataset.tab === 'market' && !marketViewLoaded) {
+        marketViewLoaded = true;
+        loadMarketView();
+      }
     });
   });
 }
