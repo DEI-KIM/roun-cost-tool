@@ -234,7 +234,7 @@
         <div class="card-head">
           <h3>메뉴별 설계원가</h3>
           <div class="card-head-actions">
-            <span class="hint">📋 엑셀에서 표 범위를 복사한 뒤 첫 칸에 붙여넣으면 한 번에 채워집니다.</span>
+            <span class="hint">📋 엑셀에서 표 범위를 복사한 뒤 첫 칸에 붙여넣으면 한 번에 채워집니다 (시즌~운영패턴(프리미엄) 8열, 시즌명은 줄마다 반복 입력).</span>
             <button id="saveMenuGridBtn" class="btn btn-primary btn-sm" type="button">설계원가 저장</button>
             <span id="menuSaveMsg" class="save-msg"></span>
           </div>
@@ -243,7 +243,7 @@
           <table class="data-table editable-grid" id="menuGrid">
             <thead>
               <tr>
-                <th>카테고리</th><th>메뉴명</th><th>원가율(%)</th><th>g당원가</th><th>인당소비량(g)</th><th>운영패턴(저가형)</th><th>운영패턴(일반)</th><th></th>
+                <th>시즌</th><th>카테고리</th><th>메뉴명</th><th>원가율(%)</th><th>g당원가</th><th>인당소비량(g)</th><th>운영패턴(199-229)</th><th>운영패턴(일반)</th><th>운영패턴(프리미엄)</th><th></th>
               </tr>
             </thead>
             <tbody id="menuGridBody"></tbody>
@@ -268,7 +268,7 @@
         <div class="table-scroll">
           <table class="data-table wide-first" id="recipeLogTable">
             <thead>
-              <tr><th class="col-check"><input type="checkbox" id="recipeSelectAll"></th><th>시즌</th><th>카테고리</th><th>메뉴명</th><th>원가율(%)</th><th>g당원가</th><th>인당소비량</th><th>운영패턴(저가형)</th><th>운영패턴(일반)</th><th class="col-check"></th></tr>
+              <tr><th class="col-check"><input type="checkbox" id="recipeSelectAll"></th><th>시즌</th><th>카테고리</th><th>메뉴명</th><th>원가율(%)</th><th>g당원가</th><th>인당소비량</th><th>운영패턴(199-229)</th><th>운영패턴(일반)</th><th>운영패턴(프리미엄)</th><th class="col-check"></th></tr>
             </thead>
             <tbody id="recipeLogBody"></tbody>
           </table>
@@ -287,7 +287,7 @@
         <div class="card-head">
           <h3>레시피 입력</h3>
           <div class="card-head-actions">
-            <span class="hint">📋 엑셀 표를 그대로 복사해 첫 칸에 붙여넣으세요 (시즌~자재사용량 13열, 시즌·메뉴명은 자재 줄마다 반복 입력)</span>
+            <span class="hint">📋 엑셀 표를 그대로 복사해 첫 칸에 붙여넣으세요 (시즌~운영패턴(프리미엄) 14열, 시즌·메뉴명은 자재 줄마다 반복 입력)</span>
             <button id="saveBomGridBtn" class="btn btn-primary btn-sm" type="button">저장</button>
             <span id="bomSaveMsg" class="save-msg"></span>
           </div>
@@ -296,7 +296,7 @@
           <table class="data-table editable-grid" id="bomGrid">
             <thead>
               <tr>
-                <th>시즌</th><th>메뉴명</th><th>카테고리</th><th>조리후중량</th><th>자재코드</th><th>자재명</th><th>환산계수</th><th>자재단가</th><th>전처리수율(%)</th><th>투입중량</th><th>자재사용량</th><th>운영패턴(저가형)</th><th>운영패턴(일반)</th><th></th>
+                <th>시즌</th><th>메뉴명</th><th>카테고리</th><th>조리후중량</th><th>자재코드</th><th>자재명</th><th>환산계수</th><th>자재단가</th><th>전처리수율(%)</th><th>투입중량</th><th>자재사용량</th><th>운영패턴(199-229)</th><th>운영패턴(일반)</th><th>운영패턴(프리미엄)</th><th></th>
               </tr>
             </thead>
             <tbody id="bomGridBody"></tbody>
@@ -320,7 +320,7 @@
             <thead>
               <tr>
                 <th class="col-check"><input type="checkbox" id="bomSelectAll"></th>
-                <th>시즌</th><th>메뉴명</th><th>카테고리</th><th>조리후중량</th><th>자재코드</th><th>자재명</th><th>환산계수</th><th>자재단가</th><th>전처리수율(%)</th><th>투입중량</th><th>자재사용량</th><th>운영패턴(저가형)</th><th>운영패턴(일반)</th>
+                <th>시즌</th><th>메뉴명</th><th>카테고리</th><th>조리후중량</th><th>자재코드</th><th>자재명</th><th>환산계수</th><th>자재단가</th><th>전처리수율(%)</th><th>투입중량</th><th>자재사용량</th><th>운영패턴(199-229)</th><th>운영패턴(일반)</th><th>운영패턴(프리미엄)</th>
               </tr>
             </thead>
             <tbody id="bomViewBody"></tbody>
@@ -698,6 +698,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608132030"></script>
+<script src="app.js?v=202608132115"></script>
 </body>
 </html>

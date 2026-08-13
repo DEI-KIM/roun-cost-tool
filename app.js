@@ -56,8 +56,8 @@ function normalizeCategory(raw) {
   return found || trimmed;
 }
 
-// 매장 타입 (저가형/일반) — 메뉴 운영패턴을 매장 타입별로 다르게 적용하기 위한 고정 매핑.
-// 목록에 없는 매장(신규 오픈 포함)은 전부 "일반"으로 간주한다.
+// 매장 타입 (199-229/일반/프리미엄) — 메뉴 운영패턴을 매장 타입별로 다르게 적용하기 위한 고정 매핑.
+// 199-229는 매장코드로, 프리미엄은 매장명에 "프리미엄"이 들어가는지로 구분한다. 어느 쪽도 아니면 "일반".
 const VALUE_STORE_CODES = new Set([
   'RU030', // 수원터미널
   'RU031', // 중앙로역
@@ -67,8 +67,10 @@ const VALUE_STORE_CODES = new Set([
   'RU037', // 괴정
   'RU041', // 부산대
 ]);
-function storeType(storeCode) {
-  return VALUE_STORE_CODES.has(storeCode) ? 'value' : 'regular';
+function storeType(storeCode, storeName) {
+  if (VALUE_STORE_CODES.has(storeCode)) return 'value';
+  if ((storeName || '').includes('프리미엄')) return 'premium';
+  return 'regular';
 }
 
 let state = {
@@ -791,29 +793,35 @@ async function loadTargetForm() {
 function numOrNull(v) { return v === '' || v === null || v === undefined ? null : Number(v); }
 
 // -- Menu design grid --
-// data-col: 0=카테고리 1=메뉴명 2=g당원가 3=인당소비량 (원가율은 자동계산이라 붙여넣기 대상이 아님)
+// data-col: 0=시즌(텍스트, season_id로 변환) 1=카테고리 2=메뉴명 3=g당원가 4=인당소비량
+//           5=운영패턴(199-229) 6=운영패턴(일반) 7=운영패턴(프리미엄) (원가율은 자동계산이라 붙여넣기 대상이 아님)
 const menuGridBody = $('#menuGridBody');
 function recomputeMenuRowRatio(tr) {
-  const gram = tr.querySelector('input[data-col="2"]').value;
-  const cons = tr.querySelector('input[data-col="3"]').value;
-  const ratio = computeCostRatio(numOrNull(gram), numOrNull(cons), state.seasonTarget?.target_price_per_person);
+  const gram = tr.querySelector('input[data-col="3"]').value;
+  const cons = tr.querySelector('input[data-col="4"]').value;
+  const seasonName = tr.querySelector('input[data-col="0"]').value.trim();
+  const season = state.seasons.find(s => s.name === seasonName);
+  const targetPrice = season ? state.targetPriceBySeasonId[season.id] : state.seasonTarget?.target_price_per_person;
+  const ratio = computeCostRatio(numOrNull(gram), numOrNull(cons), targetPrice ?? state.seasonTarget?.target_price_per_person);
   tr.querySelector('.computed-ratio-cell').textContent = ratio != null ? ratio.toFixed(1) + '%' : '-';
 }
 function addMenuRow() {
   const tr = document.createElement('tr');
   tr.innerHTML = `
-    <td><input type="text" data-col="0" list="categoryList"></td>
-    <td><input type="text" data-col="1"></td>
+    <td><input type="text" data-col="0" list="seasonNameList"></td>
+    <td><input type="text" data-col="1" list="categoryList"></td>
+    <td><input type="text" data-col="2"></td>
     <td class="cell-left computed-ratio-cell">-</td>
-    <td><input type="number" step="0.01" data-col="2"></td>
-    <td><input type="number" step="1" data-col="3"></td>
-    <td><input type="text" data-col="4" list="patternList"></td>
+    <td><input type="number" step="0.01" data-col="3"></td>
+    <td><input type="number" step="1" data-col="4"></td>
     <td><input type="text" data-col="5" list="patternList"></td>
+    <td><input type="text" data-col="6" list="patternList"></td>
+    <td><input type="text" data-col="7" list="patternList"></td>
     <td><button type="button" class="row-del-btn" title="삭제">×</button></td>
   `;
   tr.querySelector('.row-del-btn').addEventListener('click', () => tr.remove());
-  tr.querySelector('input[data-col="2"]').addEventListener('input', () => recomputeMenuRowRatio(tr));
   tr.querySelector('input[data-col="3"]').addEventListener('input', () => recomputeMenuRowRatio(tr));
+  tr.querySelector('input[data-col="4"]').addEventListener('input', () => recomputeMenuRowRatio(tr));
   menuGridBody.appendChild(tr);
   return tr;
 }
@@ -823,31 +831,41 @@ attachPasteFill(menuGridBody, addMenuRow);
 menuGridBody.addEventListener('paste', () => setTimeout(() => $$('tr', menuGridBody).forEach(recomputeMenuRowRatio), 0));
 
 $('#saveMenuGridBtn').addEventListener('click', async () => {
-  if (!state.currentSeasonId) return;
-  const targetPrice = state.seasonTarget?.target_price_per_person ?? null;
   const rows = [];
-  $$('tr', menuGridBody).forEach(tr => {
-    const category = tr.querySelector('input[data-col="0"]').value;
-    const menu_name = tr.querySelector('input[data-col="1"]').value;
-    const cost_per_gram = tr.querySelector('input[data-col="2"]').value;
-    const consumption_per_person = tr.querySelector('input[data-col="3"]').value;
-    const availability_pattern_value = tr.querySelector('input[data-col="4"]').value;
-    const availability_pattern_regular = tr.querySelector('input[data-col="5"]').value;
-    if (!category || !menu_name) return;
+  const unresolvedSeasons = new Set();
+  for (const tr of $$('tr', menuGridBody)) {
+    const seasonName = tr.querySelector('input[data-col="0"]').value.trim();
+    const category = tr.querySelector('input[data-col="1"]').value;
+    const menu_name = tr.querySelector('input[data-col="2"]').value;
+    const cost_per_gram = tr.querySelector('input[data-col="3"]').value;
+    const consumption_per_person = tr.querySelector('input[data-col="4"]').value;
+    const availability_pattern_value = tr.querySelector('input[data-col="5"]').value;
+    const availability_pattern_regular = tr.querySelector('input[data-col="6"]').value;
+    const availability_pattern_premium = tr.querySelector('input[data-col="7"]').value;
+    if (!seasonName || !category || !menu_name) continue;
+    const season = state.seasons.find(s => s.name === seasonName);
+    if (!season) { unresolvedSeasons.add(seasonName); continue; }
+    const targetPrice = await getTargetPrice(season.id);
     rows.push({
-      season_id: state.currentSeasonId, category: normalizeCategory(category), menu_name: menu_name.trim(),
+      season_id: season.id, category: normalizeCategory(category), menu_name: menu_name.trim(),
       cost_per_gram: numOrNull(cost_per_gram), consumption_per_person: numOrNull(consumption_per_person),
       cost_ratio: computeCostRatio(numOrNull(cost_per_gram), numOrNull(consumption_per_person), targetPrice),
       availability_pattern_value: availability_pattern_value ? availability_pattern_value.trim() : null,
       availability_pattern_regular: availability_pattern_regular ? availability_pattern_regular.trim() : null,
+      availability_pattern_premium: availability_pattern_premium ? availability_pattern_premium.trim() : null,
     });
-  });
+  }
+  if (unresolvedSeasons.size) {
+    flash($('#menuSaveMsg'), `존재하지 않는 시즌명이 있어 저장하지 않았습니다: ${[...unresolvedSeasons].join(', ')} (상단 "+ 새 시즌"으로 먼저 만들어주세요)`, false);
+    return;
+  }
   if (!rows.length) { flash($('#menuSaveMsg'), '입력된 행이 없습니다.', false); return; }
   const { error } = await sb.from('menu_designs').insert(rows);
   if (error) { flash($('#menuSaveMsg'), '저장 실패: ' + error.message, false); return; }
 
-  // recompute category_summary design_* rollup
-  await rebuildCategoryDesignRollup(state.currentSeasonId);
+  // recompute category_summary design_* rollup (이번에 저장된 시즌들 전부)
+  const seasonIds = [...new Set(rows.map(r => r.season_id))];
+  for (const sid of seasonIds) await rebuildCategoryDesignRollup(sid);
 
   menuGridBody.innerHTML = '';
   for (let i = 0; i < 5; i++) addMenuRow();
@@ -887,9 +905,9 @@ async function rebuildCategoryDesignRollup(seasonId) {
 // Tab: 레시피 등록 (BOM) — 시즌과 무관하게 누적되는 메뉴별 자재 비율표
 // =====================================================================
 // data-col: 0=시즌(텍스트, season_id로 변환) 1=메뉴명 2=카테고리 3=조리후중량 4=자재코드 5=자재명
-//           6=환산계수 7=자재단가 8=전처리수율 9=투입중량 10=자재사용량 11=운영패턴(저가형) 12=운영패턴(일반)
+//           6=환산계수 7=자재단가 8=전처리수율 9=투입중량 10=자재사용량 11=운영패턴(199-229) 12=운영패턴(일반) 13=운영패턴(프리미엄)
 const BOM_FIELDS = ['season_name', 'menu_name', 'category', 'cooked_weight', 'material_code', 'material_name',
-  'conversion_factor', 'material_price', 'prep_yield', 'input_weight', 'usage_amount', 'availability_pattern_value', 'availability_pattern_regular'];
+  'conversion_factor', 'material_price', 'prep_yield', 'input_weight', 'usage_amount', 'availability_pattern_value', 'availability_pattern_regular', 'availability_pattern_premium'];
 const BOM_NUMERIC_COLS = [3, 6, 7, 8, 9, 10];
 
 const bomGridBody = $('#bomGridBody');
@@ -897,7 +915,7 @@ function addBomRow() {
   const tr = document.createElement('tr');
   tr.innerHTML = BOM_FIELDS.map((f, i) => {
     const isNumeric = BOM_NUMERIC_COLS.includes(i);
-    const listAttr = f === 'category' ? 'list="categoryList"' : f === 'season_name' ? 'list="seasonNameList"' : (f === 'availability_pattern_value' || f === 'availability_pattern_regular') ? 'list="patternList"' : '';
+    const listAttr = f === 'category' ? 'list="categoryList"' : f === 'season_name' ? 'list="seasonNameList"' : (f === 'availability_pattern_value' || f === 'availability_pattern_regular' || f === 'availability_pattern_premium') ? 'list="patternList"' : '';
     return `<td><input type="${isNumeric ? 'number' : 'text'}" ${isNumeric ? 'step="0.01"' : ''} data-col="${i}" ${listAttr}></td>`;
   }).join('') + `<td><button type="button" class="row-del-btn" title="삭제">×</button></td>`;
   tr.querySelector('.row-del-btn').addEventListener('click', () => tr.remove());
@@ -987,8 +1005,9 @@ function renderBomView() {
       <td>${fmtNum(r.usage_amount, 1)}</td>
       <td>${r.availability_pattern_value ?? '-'}</td>
       <td>${r.availability_pattern_regular ?? '-'}</td>
+      <td>${r.availability_pattern_premium ?? '-'}</td>
     </tr>
-  `).join('') || `<tr><td colspan="14" style="text-align:center;color:var(--muted)">등록된 레시피가 없습니다.</td></tr>`;
+  `).join('') || `<tr><td colspan="15" style="text-align:center;color:var(--muted)">등록된 레시피가 없습니다.</td></tr>`;
 }
 
 ['bomSearch', 'bomSeasonFilter'].forEach(id => {
@@ -1057,9 +1076,10 @@ async function renderRecipeLog() {
       <td><input class="cell-input" type="number" step="1" data-field="consumption_per_person" value="${r.consumption_per_person ?? ''}"></td>
       <td class="cell-left"><input class="cell-input" data-field="availability_pattern_value" value="${r.availability_pattern_value ?? ''}" list="patternList"></td>
       <td class="cell-left"><input class="cell-input" data-field="availability_pattern_regular" value="${r.availability_pattern_regular ?? ''}" list="patternList"></td>
+      <td class="cell-left"><input class="cell-input" data-field="availability_pattern_premium" value="${r.availability_pattern_premium ?? ''}" list="patternList"></td>
       <td class="col-check"><button type="button" class="row-del-btn" title="삭제">×</button></td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10" style="text-align:center;color:var(--muted)">데이터가 없습니다.</td></tr>`;
+  }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--muted)">데이터가 없습니다.</td></tr>`;
 
   $$('input.cell-input', body).forEach(inp => {
     inp.addEventListener('change', async (e) => {
@@ -1067,7 +1087,7 @@ async function renderRecipeLog() {
       const id = Number(tr.dataset.id);
       const seasonId = Number(tr.dataset.seasonId);
       const field = e.target.dataset.field;
-      const isText = field === 'category' || field === 'menu_name' || field === 'availability_pattern_value' || field === 'availability_pattern_regular';
+      const isText = field === 'category' || field === 'menu_name' || field === 'availability_pattern_value' || field === 'availability_pattern_regular' || field === 'availability_pattern_premium';
       const value = field === 'category' ? normalizeCategory(e.target.value) : isText ? (e.target.value.trim() || null) : numOrNull(e.target.value);
       const payload = { [field]: value };
       if (field === 'cost_per_gram' || field === 'consumption_per_person') {
@@ -1370,12 +1390,13 @@ async function flattenRecipesForSeason(seasonId) {
   const cookedWeightByMenu = new Map();
   byMenu.forEach((rows, name) => cookedWeightByMenu.set(name, rows[0]?.cooked_weight ?? null));
   // 운영패턴(상시/디너·주말/주말) — 인당소비량 계산 시 분모(객수)를 이 메뉴가 실제로 팔릴 수 있었던
-  // 시간대의 객수로 좁히는 데 쓰인다. 저가형/일반 매장이 서로 다른 패턴을 가질 수 있어 매장타입별로 따로 저장.
+  // 시간대의 객수로 좁히는 데 쓰인다. 199-229/일반/프리미엄 매장이 서로 다른 패턴을 가질 수 있어 매장타입별로 따로 저장.
   // 안 정해져 있으면 상시로 간주(기존 동작과 동일).
   const availabilityPatternByMenu = new Map();
   byMenu.forEach((rows, name) => availabilityPatternByMenu.set(name, {
     value: rows[0]?.availability_pattern_value || '상시',
     regular: rows[0]?.availability_pattern_regular || '상시',
+    premium: rows[0]?.availability_pattern_premium || '상시',
   }));
   // 메뉴 진단 탭에서 "같은 조닝의 다른 메뉴가 쓰는 저가 자재" 후보를 찾을 때 씀
   const categoryByMenu = new Map();
@@ -1847,7 +1868,7 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
       const actualByMaterial = buildActualByMaterial(usageByStore.get(storeCode) || []);
       const { gramsProducedByMenu, sourceByMenu, confidenceByMenu } = estimateGramsProduced(recipeCtx, actualByMaterial, () => {});
       perStore.push({
-        store_code: storeCode, store_name: storeMap.get(storeCode), store_type: storeType(storeCode),
+        store_code: storeCode, store_name: storeMap.get(storeCode), store_type: storeType(storeCode, storeMap.get(storeCode)),
         customersByPattern: customersByStorePattern.get(storeCode) || emptyPatternBucket(),
         gramsProducedByMenu, sourceByMenu, confidenceByMenu,
       });
@@ -1878,9 +1899,9 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
   // "이 메뉴를 살 수 있었던 손님 수"로 나누면 상시가 아닌 메뉴의 인당소비량이 실제에 가깝게 잡힌다.
   const results = finalMenus.map(menu => {
     const wr = waterRatio(menu);
-    const patternsForMenu = availabilityPatternByMenu.get(menu) || { value: '상시', regular: '상시' };
+    const patternsForMenu = availabilityPatternByMenu.get(menu) || { value: '상시', regular: '상시', premium: '상시' };
     const patternFor = (type) => {
-      const p = type === 'value' ? patternsForMenu.value : patternsForMenu.regular;
+      const p = type === 'value' ? patternsForMenu.value : type === 'premium' ? patternsForMenu.premium : patternsForMenu.regular;
       return PATTERNS.includes(p) ? p : '상시';
     };
     let sumGrams = 0, sumCustomers = 0, fullPatternCustomers = 0, storesWithData = 0, anyAllocated = false;
@@ -1934,6 +1955,7 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
       confidence,
       availability_pattern_value: patternsForMenu.value,
       availability_pattern_regular: patternsForMenu.regular,
+      availability_pattern_premium: patternsForMenu.premium,
       stores_with_data: storesWithData,
       stores_total: storeCodes.length,
       per_store: perStoreOut,
@@ -3456,7 +3478,7 @@ $('#pivotUnitSelect').addEventListener('change', updatePivotUnitVisibility);
 $('#pivotSeasonSelect').addEventListener('change', loadPivotCompareView);
 
 // ---- ①비교 ②전매장 공용 엔진 ----
-// 매장군: storeType()의 value/regular를 그대로 재사용(레퍼런스의 "프리미엄"은 우리 데이터에 없어 제외).
+// 매장군: storeType()의 value/regular/premium을 그대로 재사용.
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function pivotShortName(n) { return (n || '').replace('로운샤브 프리미엄 ', '[프] ').replace('로운 ', ''); }
 function pivotDateRangeFromControls() {
@@ -3512,7 +3534,7 @@ async function loadPivotCompareData() {
   (salesRes.data || []).forEach(r => {
     if (!r.store_code) return;
     if (!storeAgg.has(r.store_code)) {
-      storeAgg.set(r.store_code, { code: r.store_code, name: r.store_name || r.store_code, sales: 0, guests: 0, type: storeType(r.store_code) });
+      storeAgg.set(r.store_code, { code: r.store_code, name: r.store_name || r.store_code, sales: 0, guests: 0, type: storeType(r.store_code, r.store_name) });
     }
     const e = storeAgg.get(r.store_code);
     e.sales += Number(r.sales_total) || 0;
@@ -3563,9 +3585,8 @@ function renderPivotCompare() {
 
   const mode = $('#pivotModeSelect').value;
   const allCodes = data.stores.map(s => s.code);
-  // "일반"(storeType 기준 199-229가 아닌 매장) 중에서, 매장명에 "프리미엄"이 들어가면 프리미엄으로 따로 뺀다.
-  const premiumCodes = data.stores.filter(s => s.type === 'regular' && (s.name || '').includes('프리미엄')).map(s => s.code);
-  const regularCodes = data.stores.filter(s => s.type === 'regular' && !(s.name || '').includes('프리미엄')).map(s => s.code);
+  const premiumCodes = data.stores.filter(s => s.type === 'premium').map(s => s.code);
+  const regularCodes = data.stores.filter(s => s.type === 'regular').map(s => s.code);
   const valueCodes = data.stores.filter(s => s.type === 'value').map(s => s.code);
 
   let columns;
