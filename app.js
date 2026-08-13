@@ -3647,7 +3647,7 @@ function renderPivotCompare() {
     return { design: d, result: r, costPerGram, brandAmt };
   });
 
-  let H = '<thead><tr><th>존 / 메뉴·자재</th><th>목표</th>';
+  let H = '<thead><tr><th>존 / 메뉴·자재</th><th class="pivot-target-col">목표</th>';
   columns.forEach(c => {
     const dnd = (pivotTab === 'B' && c.ord != null)
       ? ` draggable="true" ondragstart="pivotDragStore(event,${c.ord})" ondragover="event.preventDefault()" ondrop="pivotDropStore(event,${c.ord})" style="cursor:grab"`
@@ -3660,7 +3660,7 @@ function renderPivotCompare() {
   {
     const brandTarget = weightedTotals([...data.targetByCategory.values()], 'target');
     H += '<tr class="pivot-zone pivot-met"><td>【로운 전체】</td>' +
-      `<td>${pivotTargetTxt(mode, brandTarget.costPerGram, brandTarget.consumption, data.targetPrice)}</td>`;
+      `<td class="pivot-target-col">${pivotTargetTxt(mode, brandTarget.costPerGram, brandTarget.consumption, data.targetPrice)}</td>`;
     columns.forEach(c => {
       let amt = 0, grams = 0;
       allMenuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } });
@@ -3680,7 +3680,7 @@ function renderPivotCompare() {
     const zid = zone;
     H += `<tr class="pivot-zone" onclick="pivotToggle('${esc(zid)}')"><td>${pivotCollapsed[zid] ? '▸' : '▾'} 【${esc(zone)}】` +
       ` <span class="pivot-badge">평균 g당${avgCostPerGram != null ? fmtNum(avgCostPerGram, 1) : '-'}원</span></td>` +
-      `<td>${pivotTargetTxt(mode, catRow?.target_cost_per_gram, catRow?.target_consumption_per_person, data.targetPrice)}</td>`;
+      `<td class="pivot-target-col">${pivotTargetTxt(mode, catRow?.target_cost_per_gram, catRow?.target_consumption_per_person, data.targetPrice)}</td>`;
     columns.forEach(c => {
       // 존 합계는 메뉴마다 분모(패턴별 손님수)가 달라 그냥 더하면 안 된다 — 그램/금액만 메뉴 합산하고,
       // 손님수는 그 매장군의 전체 손님수(c.guests) 하나로 통일해서 나눈다(이번 세션 인당소비액 합산 버그와 동일 원리).
@@ -3701,7 +3701,7 @@ function renderPivotCompare() {
       H += `<tr class="pivot-menu"${hasParts ? ` onclick="pivotToggleIng('${esc(mid)}')"` : ''}><td title="${esc(menuName)}">` +
         (hasParts ? (pivotOpenIng[mid] ? '▾ ' : '▸ ') : '　') + esc(menuName) +
         ` <span class="pivot-badge">g당${m.costPerGram != null ? fmtNum(m.costPerGram, 1) : '-'}원 · ${cookedWeight ? fmtNum(cookedWeight, 0) : '-'}g(레시피)</span>` +
-        '</td><td class="pivot-na">—</td>';
+        '</td><td class="pivot-na pivot-target-col">—</td>';
       columns.forEach(c => {
         const g = pivotGroupValue(m.result, c.codes);
         if (g.grams == null) { H += '<td class="pivot-na">—</td>'; return; }
@@ -3714,7 +3714,7 @@ function renderPivotCompare() {
         [...ings.entries()].sort((a, b) => b[1] - a[1]).forEach(([code, g]) => {
           const share = g / cookedWeight;
           const ingName = data.flat.rawMaterialNameByCode.get(code) || code;
-          H += `<tr class="pivot-ing"><td title="${esc(ingName)}">└ ${esc(ingName)} <span class="pivot-badge">${fmtNum(g, 1)}g/${fmtNum(cookedWeight, 0)}g</span></td><td class="pivot-na">—</td>`;
+          H += `<tr class="pivot-ing"><td title="${esc(ingName)}">└ ${esc(ingName)} <span class="pivot-badge">${fmtNum(g, 1)}g/${fmtNum(cookedWeight, 0)}g</span></td><td class="pivot-na pivot-target-col">—</td>`;
           columns.forEach(c => {
             const gv = pivotGroupValue(m.result, c.codes);
             if (gv.grams == null) { H += '<td class="pivot-na">—</td>'; return; }

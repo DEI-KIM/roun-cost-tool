@@ -403,6 +403,7 @@ table { font-variant-numeric: tabular-nums; }
 .pivot-seas { color: var(--accent-deep); font-weight: 700; }
 .pivot-badge { font-size: 10.5px; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--muted); font-weight: 400; }
 .pivot-na { color: var(--line-strong); }
+.pivot-target-col { width: 62px; }
 .pivot-legend { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
 
 #pivotVeSummary:not(:empty) { background: var(--accent-soft); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; }
