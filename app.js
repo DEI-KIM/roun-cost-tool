@@ -3533,7 +3533,9 @@ async function loadPivotCompareData() {
   (designsRes.data || []).forEach(d => { if (d.menu_name) designByMenu.set(d.menu_name, d); });
   const costByMenu = new Map((costResult.results || []).map(r => [r.menu_name, r.actual_cost_per_gram]));
   const targetByCategory = new Map();
-  (categorySummaryRes.data || []).forEach(r => { if (r.category) targetByCategory.set(r.category, r); });
+  // 통합조닝 시절의 낡은 category_summary 행("월남쌈/죽", "음료/디저트" 등)이 남아있을 수 있어,
+  // 대시보드/목표원가 탭과 똑같이 현재 조닝 목록(DASHBOARD_CATEGORIES)만 골라 쓴다.
+  (categorySummaryRes.data || []).forEach(r => { if (r.category && DASHBOARD_CATEGORIES.includes(r.category)) targetByCategory.set(r.category, r); });
 
   const storeAgg = new Map();
   (salesRes.data || []).forEach(r => {
