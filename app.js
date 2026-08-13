@@ -3566,13 +3566,24 @@ function pivotGroupValue(menuResult, storeCodes) {
   const rate = measuredGrams / measuredCustomers;
   return { grams: rate * totalCustomers, customers: totalCustomers };
 }
+// 인당소비량(g)/인당소비액(원) 모드에서는 브랜드 대비 %배지 대신, 같은 셀에 그램·금액을
+// "주값(부값)" 형태로 함께 보여준다 — 그램 모드에서 뜬금없이 %가 섞여 보이는 걸 없애고
+// 대신 같은 인당 실적을 두 단위로 바로 대조할 수 있게 한다.
 function pivotValueTxt(mode, amt, grams, customers, netSales) {
-  let raw, main;
-  if (mode === 'g') { raw = (customers && grams != null) ? grams / customers : null; main = raw == null ? '—' : fmtNum(raw, 1); }
-  else if (mode === 'pg') { raw = customers ? amt / customers : null; main = raw == null ? '—' : fmtNum(raw, 0); }
-  else if (mode === 'pp') { raw = netSales ? amt / netSales * 100 : null; main = raw == null ? '—' : raw.toFixed(1) + '%'; }
+  let raw, main, secondary = '';
+  if (mode === 'g') {
+    raw = (customers && grams != null) ? grams / customers : null;
+    main = raw == null ? '—' : fmtNum(raw, 1);
+    const moneyPerCustomer = customers ? amt / customers : null;
+    secondary = moneyPerCustomer != null ? ` <span class="pivot-d">(${fmtNum(moneyPerCustomer, 0)}원)</span>` : '';
+  } else if (mode === 'pg') {
+    raw = customers ? amt / customers : null;
+    main = raw == null ? '—' : fmtNum(raw, 0);
+    const gramPerCustomer = (customers && grams != null) ? grams / customers : null;
+    secondary = gramPerCustomer != null ? ` <span class="pivot-d">(${fmtNum(gramPerCustomer, 1)}g)</span>` : '';
+  } else if (mode === 'pp') { raw = netSales ? amt / netSales * 100 : null; main = raw == null ? '—' : raw.toFixed(1) + '%'; }
   else { raw = amt / 1e6; main = fmtNum(raw, 1); }
-  return { raw, main };
+  return { raw, main, secondary };
 }
 // 목표 열 전용 — category_summary의 target_cost_per_gram/target_consumption_per_person을
 // 매장군 구분 없이(목표는 시즌 전체 단일값이라) 현재 선택된 구분(mode)에 맞게 표시한다.
@@ -3582,14 +3593,6 @@ function pivotTargetTxt(mode, gramPerG, consumptionPerPerson, targetPrice) {
   if (mode === 'pp') { const r = computeCostRatio(gramPerG, consumptionPerPerson, targetPrice); return r != null ? r.toFixed(1) + '%' : '—'; }
   return '—';
 }
-function pivotDeltaBadge(mode, raw, brandRaw) {
-  if (!(mode === 'pg' || mode === 'g') || raw == null || brandRaw == null || brandRaw <= 0) return '';
-  const d = (raw - brandRaw) / brandRaw * 100;
-  if (!isFinite(d)) return '';
-  const cls = d > 15 ? 'hi' : d < -15 ? 'lo' : '';
-  return ` <span class="pivot-d ${cls}">(${d > 0 ? '+' : ''}${d.toFixed(0)}%)</span>`;
-}
-
 function renderPivotCompare() {
   const data = pivotCompareCache;
   const tbl = $('#pivotTable');
@@ -3634,7 +3637,6 @@ function renderPivotCompare() {
   const resultByMenu = new Map(data.results.map(r => [r.menu_name, r]));
   const zonesPresent = [...new Set([...data.designByMenu.values()].map(d => d.category).filter(Boolean))]
     .sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
-  const brandCol = columns.find(c => c.brand);
 
   // 모든 메뉴의 통계를 한 번만 계산해서, 전체 합계 행과 존별 행이 같은 값을 공유한다.
   const allMenuStats = [...data.designByMenu.values()].map(d => {
@@ -3642,7 +3644,7 @@ function renderPivotCompare() {
     const costPerGram = data.costByMenu.get(d.menu_name) ?? d.cost_per_gram;
     const brandVal = pivotGroupValue(r, allCodes);
     const brandAmt = (brandVal.grams || 0) * (costPerGram || 0);
-    return { design: d, result: r, costPerGram, brandGrams: brandVal.grams, brandCustomers: brandVal.customers, brandAmt };
+    return { design: d, result: r, costPerGram, brandAmt };
   });
 
   let H = '<thead><tr><th>존 / 메뉴·자재</th><th>목표</th>';
@@ -3656,9 +3658,6 @@ function renderPivotCompare() {
 
   // 전체 조닝 합계 행 — 존 합계와 같은 원리로 손님수는 매장군 전체 손님수 하나로 통일한다.
   {
-    const totalBrandAmt = allMenuStats.reduce((a, m) => a + m.brandAmt, 0);
-    const totalBrandGrams = allMenuStats.reduce((a, m) => a + (m.brandGrams || 0), 0);
-    const totalBrandTxt = pivotValueTxt(mode, totalBrandAmt, totalBrandGrams, brandCol.guests, brandCol.netSales);
     const brandTarget = weightedTotals([...data.targetByCategory.values()], 'target');
     H += '<tr class="pivot-zone pivot-met"><td>【로운 전체】</td>' +
       `<td>${pivotTargetTxt(mode, brandTarget.costPerGram, brandTarget.consumption, data.targetPrice)}</td>`;
@@ -3666,17 +3665,13 @@ function renderPivotCompare() {
       let amt = 0, grams = 0;
       allMenuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } });
       const t = pivotValueTxt(mode, amt, grams, c.guests, c.netSales);
-      const badge = c.brand ? '' : pivotDeltaBadge(mode, t.raw, totalBrandTxt.raw);
-      H += `<td>${t.main}${badge}</td>`;
+      H += `<td>${t.main}${t.secondary}</td>`;
     });
     H += '</tr>';
   }
 
   zonesPresent.forEach(zone => {
     const menuStats = allMenuStats.filter(m => m.design.category === zone).sort((a, b) => b.brandAmt - a.brandAmt);
-    const zoneBrandAmt = menuStats.reduce((a, m) => a + m.brandAmt, 0);
-    const zoneBrandGrams = menuStats.reduce((a, m) => a + (m.brandGrams || 0), 0);
-    const zoneBrandTxt = pivotValueTxt(mode, zoneBrandAmt, zoneBrandGrams, brandCol.guests, brandCol.netSales);
 
     const withCost = menuStats.filter(m => m.costPerGram != null);
     const avgCostPerGram = withCost.length ? withCost.reduce((a, m) => a + m.costPerGram, 0) / withCost.length : null;
@@ -3692,8 +3687,7 @@ function renderPivotCompare() {
       let amt = 0, grams = 0;
       menuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } });
       const t = pivotValueTxt(mode, amt, grams, c.guests, c.netSales);
-      const badge = c.brand ? '' : pivotDeltaBadge(mode, t.raw, zoneBrandTxt.raw);
-      H += `<td>${t.main}${badge}</td>`;
+      H += `<td>${t.main}${t.secondary}</td>`;
     });
     H += '</tr>';
     if (pivotCollapsed[zid]) return;
@@ -3708,16 +3702,12 @@ function renderPivotCompare() {
         (hasParts ? (pivotOpenIng[mid] ? '▾ ' : '▸ ') : '　') + esc(menuName) +
         ` <span class="pivot-badge">g당${m.costPerGram != null ? fmtNum(m.costPerGram, 1) : '-'}원 · ${cookedWeight ? fmtNum(cookedWeight, 0) : '-'}g(레시피)</span>` +
         '</td><td class="pivot-na">—</td>';
-      const brandGVal = (m.brandCustomers && m.brandGrams != null) ? m.brandGrams / m.brandCustomers : null;
-      const brandPgVal = m.brandCustomers ? m.brandAmt / m.brandCustomers : null;
-      const menuBrandRaw = mode === 'g' ? brandGVal : mode === 'pg' ? brandPgVal : null;
       columns.forEach(c => {
         const g = pivotGroupValue(m.result, c.codes);
         if (g.grams == null) { H += '<td class="pivot-na">—</td>'; return; }
         const amt = g.grams * (m.costPerGram || 0);
         const t = pivotValueTxt(mode, amt, g.grams, g.customers, c.netSales);
-        const badge = c.brand ? '' : pivotDeltaBadge(mode, t.raw, menuBrandRaw);
-        H += `<td>${t.main}${badge}</td>`;
+        H += `<td>${t.main}${t.secondary}</td>`;
       });
       H += '</tr>';
       if (hasParts && pivotOpenIng[mid]) {
