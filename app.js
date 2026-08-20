@@ -3507,6 +3507,7 @@ function pivotDateRangeFromControls() {
 let pivotCompareCache = null;
 let pivotCollapsed = {};
 let pivotOpenIng = {};
+let pivotTsCollapsed = {};
 async function loadPivotCompareData() {
   const dateRange = pivotDateRangeFromControls();
   if (!dateRange) return { error: '기간을 선택해주세요.' };
@@ -3734,6 +3735,7 @@ function renderPivotCompare() {
 }
 
 function pivotToggle(zoneId) { pivotCollapsed[zoneId] = !pivotCollapsed[zoneId]; renderPivotCompare(); }
+function pivotTsToggle(zoneId) { pivotTsCollapsed[zoneId] = !pivotTsCollapsed[zoneId]; renderPivotTimeSeries(); }
 function pivotToggleIng(menuId) { pivotOpenIng[menuId] = !pivotOpenIng[menuId]; renderPivotCompare(); }
 let pivotStoreOrder = null;
 let pivotDragIdx = null;
@@ -3817,6 +3819,9 @@ async function ensurePivotTsStoreOptions() {
     sel.appendChild(opt);
   });
 }
+function pivotTsSeasonsSorted() {
+  return state.seasons.filter(s => s.start_month && s.end_month).sort((a, b) => a.start_month.localeCompare(b.start_month));
+}
 function populatePivotTsFromSelect() {
   const unit = $('#pivotTsUnitSelect').value;
   const range = pivotTsSeasonRange();
@@ -3825,9 +3830,12 @@ function populatePivotTsFromSelect() {
   if (!range) { sel.innerHTML = ''; return; }
   const opts = unit === 'w'
     ? pivotAllWeekPeriods(range.from, range.to).map(w => ({ value: `${w.periodStart}|${w.periodEnd}`, label: w.periodEnd.slice(2) }))
+    : unit === 's'
+    ? pivotTsSeasonsSorted().map(s => ({ value: String(s.id), label: s.name }))
     : pivotMonthRange(range.from, range.to).map(m => ({ value: m, label: m.slice(2) }));
   sel.innerHTML = opts.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
   if (opts.some(o => o.value === cur)) { sel.value = cur; return; }
+  if (unit === 's') { sel.value = opts[0]?.value || ''; return; } // 시즌별은 개수가 적어 기본으로 처음부터 전부 보여준다
   const dflt = unit === 'w' ? 16 : 12;
   const todayStr = new Date().toISOString().slice(0, 10);
   let anchorIdx = -1;
@@ -3853,6 +3861,10 @@ async function loadPivotTimeSeriesData() {
     const all = pivotAllWeekPeriods(range.from, range.to).filter(w => w.periodStart <= todayStr);
     const idx = all.findIndex(w => `${w.periodStart}|${w.periodEnd}` === fromVal);
     periods = (idx >= 0 ? all.slice(idx) : all).map(w => ({ start: w.periodStart, end: w.periodEnd, label: w.periodEnd.slice(2) }));
+  } else if (unit === 's') {
+    const all = pivotTsSeasonsSorted().filter(s => s.start_month <= todayStr);
+    const idx = all.findIndex(s => String(s.id) === fromVal);
+    periods = (idx >= 0 ? all.slice(idx) : all).map(s => ({ start: s.start_month, end: s.end_month, label: s.name, seasonName: s.name }));
   } else {
     const all = pivotMonthRange(range.from, range.to).filter(m => m + '-01' <= todayStr);
     const idx = all.findIndex(m => m === fromVal);
@@ -3876,7 +3888,7 @@ async function loadPivotTimeSeriesData() {
       const costResult = costCacheBySeasonId.get(seasonId);
       const costByMenu = new Map((costResult.results || []).map(r => [r.menu_name, r.actual_cost_per_gram]));
       let totalAmt = 0, meatAmt = 0;
-      const zoneAmt = {}, zoneGrams = {};
+      const zoneAmt = {}, zoneGrams = {}, menuAmt = {}, menuGrams = {}, menuCategory = {};
       consumption.designByMenu.forEach((d, menu) => {
         const grams = consumption.gramsProducedByMenu.get(menu);
         if (grams == null || !d.category) return;
@@ -3885,9 +3897,10 @@ async function loadPivotTimeSeriesData() {
         totalAmt += amt;
         zoneAmt[d.category] = (zoneAmt[d.category] || 0) + amt;
         zoneGrams[d.category] = (zoneGrams[d.category] || 0) + grams;
+        menuAmt[menu] = amt; menuGrams[menu] = grams; menuCategory[menu] = d.category;
         if (d.category === '축산') meatAmt += amt;
       });
-      out.push({ ...p, seasonName: season?.name, totalAmt, meatAmt, zoneAmt, zoneGrams,
+      out.push({ ...p, seasonName: season?.name, totalAmt, meatAmt, zoneAmt, zoneGrams, menuAmt, menuGrams, menuCategory,
         totalCustomers: consumption.totalCustomers, netSales: consumption.totalSales / 1.1 });
     } else {
       const [{ data: usage }, { data: sales }] = await Promise.all([
@@ -3930,14 +3943,35 @@ function renderPivotTimeSeries() {
   H += row('축산 원/객', p => (p.meatAmt != null && p.totalCustomers) ? fmtNum(p.meatAmt / p.totalCustomers, 0) : '—', 'pivot-met');
   H += row('축산 %', p => (p.meatAmt != null && p.netSales) ? (p.meatAmt / p.netSales * 100).toFixed(1) + '%' : '—', 'pivot-met');
 
+  const tsCellVal = (amt, grams, p) => {
+    if (amt == null) return '—';
+    if (mode === 'g') return (grams != null && p.totalCustomers) ? fmtNum(grams / p.totalCustomers, 1) : '—';
+    if (mode === 'pp') return p.netSales ? (amt / p.netSales * 100).toFixed(1) + '%' : '—';
+    return p.totalCustomers ? fmtNum(amt / p.totalCustomers, 0) : '—';
+  };
+
   if (data.targetCode === 'brand') {
+    // 존별로 등장하는 모든 메뉴 이름을 기간 전체에서 모아, 존을 펼치면 그 메뉴들을 총액 큰 순으로 보여준다.
+    const menusByZone = {};
+    data.periods.forEach(p => {
+      Object.entries(p.menuCategory || {}).forEach(([menu, cat]) => {
+        (menusByZone[cat] = menusByZone[cat] || new Set()).add(menu);
+      });
+    });
     CATEGORY_ORDER.filter(z => z !== '드랍').forEach(zone => {
-      H += row(`【${zone}】`, p => {
-        const amt = p.zoneAmt?.[zone];
-        if (amt == null) return '—';
-        if (mode === 'g') { const g = p.zoneGrams?.[zone]; return (g != null && p.totalCustomers) ? fmtNum(g / p.totalCustomers, 1) : '—'; }
-        if (mode === 'pp') return p.netSales ? (amt / p.netSales * 100).toFixed(1) + '%' : '—';
-        return p.totalCustomers ? fmtNum(amt / p.totalCustomers, 0) : '—';
+      const zid = 'ts|' + zone;
+      H += `<tr class="pivot-zone" onclick="pivotTsToggle('${esc(zid)}')"><td>${pivotTsCollapsed[zid] ? '▸' : '▾'} 【${esc(zone)}】</td>`;
+      data.periods.forEach(p => { H += `<td>${tsCellVal(p.zoneAmt?.[zone], p.zoneGrams?.[zone], p)}</td>`; });
+      H += '</tr>';
+      if (pivotTsCollapsed[zid]) return;
+      const menus = [...(menusByZone[zone] || [])].sort((a, b) => {
+        const sum = m => data.periods.reduce((s, p) => s + (p.menuAmt?.[m] || 0), 0);
+        return sum(b) - sum(a);
+      });
+      menus.forEach(menu => {
+        H += `<tr class="pivot-menu"><td title="${esc(menu)}">　${esc(menu)}</td>`;
+        data.periods.forEach(p => { H += `<td>${tsCellVal(p.menuAmt?.[menu], p.menuGrams?.[menu], p)}</td>`; });
+        H += '</tr>';
       });
     });
   } else {
