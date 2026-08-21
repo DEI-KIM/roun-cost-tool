@@ -202,6 +202,8 @@ table { font-variant-numeric: tabular-nums; }
 .tab-content { padding: 12px 16px 20px; max-width: none; margin: 0; }
 .tab-panel { display: none; flex-direction: column; gap: 12px; }
 .tab-panel.is-active { display: flex; }
+.subtab-panel { display: none; flex-direction: column; gap: 12px; }
+.subtab-panel.is-active { display: flex; }
 
 .panel-head { display: flex; flex-direction: column; gap: 3px; }
 .panel-head h2 { font-size: 15px; }

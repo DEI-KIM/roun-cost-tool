@@ -408,8 +408,6 @@ async function loadAllForCurrentSeason() {
     loadMenuConsumptionView(),
     loadProduceMonitoring(),
   ]);
-  loadMenuDiagnosisView(); // menuConsumptionRowsCache가 채워진 뒤에만 의미가 있어 Promise.all 밖에서 실행
-  await loadStoreHeatmapView();
   await loadRecipeLog();
 }
 
@@ -422,7 +420,9 @@ function setupTabNav() {
       $$('.tab-panel').forEach(p => p.classList.remove('is-active'));
       btn.classList.add('is-active');
       $(`#tab-${btn.dataset.tab}`).classList.add('is-active');
-      if (btn.dataset.tab === 'market' && !marketViewLoaded) {
+      // "데이터" 그룹은 기본 서브탭이 "시장 데이터"라 그룹 버튼 클릭만으로도 그 화면이 바로 보이므로,
+      // 서브탭 자체를 누르지 않아도 여기서 한 번 지연로드를 트리거해야 한다.
+      if (btn.dataset.tab === 'data-group' && !marketViewLoaded) {
         marketViewLoaded = true;
         loadMarketView();
       }
@@ -1316,63 +1316,8 @@ function computeUrgencyTiers(diagRows) {
   return { p90, p75, p50 };
 }
 
-let menuDiagnosisCache = { diagRows: [], medianCost: null, medianConsumption: null, quadrantSummary: null };
-function loadMenuDiagnosisView() {
-  const { diagRows, medianCost, medianConsumption, quadrantSummary } = computeMenuDiagnosisQuadrants(menuConsumptionRowsCache);
-  computeUrgencyTiers(diagRows);
-  menuDiagnosisCache = { diagRows, medianCost, medianConsumption, quadrantSummary };
-  renderMenuDiagnosisQuadrants();
-  renderMenuDiagnosisTable();
-}
-
-function renderMenuDiagnosisQuadrants() {
-  const { quadrantSummary } = menuDiagnosisCache;
-  const row = $('#diagnosisQuadrantRow');
-  if (!quadrantSummary) { row.innerHTML = ''; return; }
-  row.innerHTML = Object.entries(QUADRANT_META).map(([q, meta]) => {
-    const s = quadrantSummary[q] || { count: 0, totalValue: 0, pct: 0 };
-    return `
-    <div class="kpi-tile ${meta.cls}">
-      <div class="kpi-label">${meta.label}</div>
-      <div class="kpi-value">${s.count}개</div>
-      <div class="kpi-sub">객당 ${fmtNum(s.totalValue, 0)}원 (${fmtNum(s.pct, 0)}%)</div>
-    </div>`;
-  }).join('');
-}
-
-function renderMenuDiagnosisTable() {
-  const tierFilter = $('#diagnosisUrgencySelect').value;
-  const { diagRows, medianCost, medianConsumption } = menuDiagnosisCache;
-  $('#diagnosisMedianHint').textContent = medianCost != null
-    ? `기준: 중위 단가 ${fmtNum(medianCost, 2)}원/g · 중위 취식 ${fmtNum(medianConsumption, 1)}g/객 (메뉴 ${diagRows.length}개)`
-    : '';
-
-  const rows = diagRows
-    .filter(r => tierFilter === 'all' || r.tier === tierFilter)
-    .slice()
-    .sort((a, b) => b.value - a.value);
-
-  const body = $('#diagnosisTableBody');
-  body.innerHTML = rows.map(r => {
-    const meta = QUADRANT_META[r.quadrant];
-    return `
-    <tr data-menu="${r.menu_name}" data-consumption="${r.consumption}">
-      <td>${r.category ?? '-'}</td>
-      <td class="cell-left">${r.menu_name}</td>
-      <td>${fmtNum(r.costPerGram, 2)}원/g × ${fmtNum(r.consumption, 1)}g</td>
-      <td>${fmtNum(r.value, 0)}</td>
-      <td class="${meta.pillCls}">${meta.label}</td>
-      <td><input type="number" step="0.01" class="cell-input diagnosis-target-input" placeholder="${fmtNum(r.costPerGram, 2)}"></td>
-      <td class="diagnosis-revised-value">-</td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="7" style="text-align:center;color:var(--muted)">해당하는 메뉴가 없습니다.</td></tr>`;
-
-  $$('.diagnosis-target-input', body).forEach(input => {
-    input.addEventListener('input', () => recomputeDiagnosisTargetCell(input));
-  });
-}
-
-$('#diagnosisUrgencySelect').addEventListener('change', renderMenuDiagnosisTable);
+// menuDiagnosisCache/렌더 함수는 "메뉴 진단" 탭 자체를 없애면서 같이 정리함 — computeMenuDiagnosisQuadrants·
+// computeUrgencyTiers(위)는 VE 탭이 그대로 재사용하므로 남겨둔다.
 
 // =====================================================================
 // 레시피 기반 메뉴별 인당소비량 자동계산 엔진
@@ -2137,104 +2082,8 @@ async function computeActualCostPerGram(seasonId) {
   return { results, costMonth };
 }
 
-// 목표 g당원가 입력값으로 수정 객당원가를 즉시(세션 한정) 계산해 같은 행의 출력 셀에 써준다. 저장하지 않음 — 새로고침하면 초기화됨.
-function recomputeDiagnosisTargetCell(input) {
-  const tr = input.closest('tr');
-  const consumption = Number(tr.dataset.consumption);
-  const out = $('.diagnosis-revised-value', tr);
-  const target = Number(input.value);
-  if (!input.value || !Number.isFinite(target) || target <= 0) { out.textContent = '-'; return; }
-  out.textContent = fmtNum(target * consumption, 0);
-}
-
-// =====================================================================
-// Tab: 매장별 히트맵 — menu_consumption_store를 처음으로 읽어 매장×메뉴 인당소비액을 보여준다.
-// 매장별 실단가가 없어 브랜드 전체 실제g당원가(menu_consumption)를 곱하는 근사치임을 UI에 명시한다.
-// =====================================================================
-let storeHeatmapCache = { stores: [], cellMap: new Map(), menus: [], categoryByMenuName: new Map(), brandValueByMenu: new Map() };
-
-function ensureHeatmapCategoryOptions() {
-  const sel = $('#heatmapCategorySelect');
-  if (sel.options.length) return;
-  sel.innerHTML = DASHBOARD_CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('');
-}
-
-async function loadStoreHeatmapView() {
-  if (!state.currentSeasonId) return;
-  ensureHeatmapCategoryOptions();
-  const { data: storeRows, error } = await fetchAllRows('menu_consumption_store', q => q.eq('season_id', state.currentSeasonId));
-  if (error) { console.error(error); return; }
-
-  const storeMap = new Map();
-  (storeRows || []).forEach(r => { if (r.store_code) storeMap.set(r.store_code, r.store_name || r.store_code); });
-  const stores = [...storeMap.entries()].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
-
-  // 매장별 인당소비량 × 브랜드 전체 실제g당원가(menuConsumptionRowsCache) = 매장별 인당소비액 근사치
-  const costPerGramByMenu = new Map();
-  const categoryByMenuName = new Map();
-  const brandValueByMenu = new Map(); // 메뉴별 소비액 탭과 동일한, 가중평균 기반 브랜드 전체 인당소비액("로운" 합계 행에 씀)
-  menuConsumptionRowsCache.forEach(m => {
-    const effective = m.actual_cost_per_gram ?? m.cost_per_gram;
-    if (effective != null) costPerGramByMenu.set(m.menu_name, effective);
-    categoryByMenuName.set(m.menu_name, m.category);
-    if (m.value != null) brandValueByMenu.set(m.menu_name, m.value);
-  });
-
-  const cellMap = new Map();
-  const menuSet = new Set();
-  (storeRows || []).forEach(r => {
-    if (!r.store_code || !r.menu_name) return;
-    menuSet.add(r.menu_name);
-    const costPerGram = costPerGramByMenu.get(r.menu_name);
-    const value = (costPerGram != null && r.consumption_per_person != null) ? costPerGram * r.consumption_per_person : null;
-    cellMap.set(`${r.store_code}|${r.menu_name}`, value);
-  });
-
-  storeHeatmapCache = { stores, cellMap, menus: [...menuSet], categoryByMenuName, brandValueByMenu };
-  renderStoreHeatmapTable();
-}
-
-// 같은 메뉴(열) 안에서 매장 간 평균 대비 상대편차로 색을 칠한다 (메뉴마다 절대 금액이 달라 절대기준은 부적절).
-function renderStoreHeatmapTable() {
-  const { stores, cellMap, menus, categoryByMenuName, brandValueByMenu } = storeHeatmapCache;
-  const category = $('#heatmapCategorySelect').value;
-  const cols = menus.filter(m => categoryByMenuName.get(m) === category);
-
-  // 총합(표시된 매장 기준)이 큰 품목이 왼쪽에 오도록 정렬
-  const colTotal = new Map();
-  cols.forEach(m => {
-    const vals = stores.map(s => cellMap.get(`${s.code}|${m}`)).filter(v => v != null);
-    colTotal.set(m, vals.reduce((a, v) => a + v, 0));
-  });
-  cols.sort((a, b) => (colTotal.get(b) || 0) - (colTotal.get(a) || 0));
-
-  $('#heatmapTableHeadRow').innerHTML = `<th>매장</th>` + cols.map(m => `<th>${m}</th>`).join('');
-
-  const colMean = new Map();
-  cols.forEach(m => {
-    const vals = stores.map(s => cellMap.get(`${s.code}|${m}`)).filter(v => v != null);
-    colMean.set(m, vals.length ? vals.reduce((a, v) => a + v, 0) / vals.length : null);
-  });
-
-  const brandRow = `<tr class="row-brand"><td>로운 (합계)</td>` +
-    cols.map(m => `<td>${brandValueByMenu.get(m) != null ? fmtNum(brandValueByMenu.get(m), 0) : '-'}</td>`).join('') + `</tr>`;
-
-  const storeRows = stores.map(s => {
-    const cells = cols.map(m => {
-      const v = cellMap.get(`${s.code}|${m}`);
-      const mean = colMean.get(m);
-      if (v == null || !mean) return `<td>-</td>`;
-      const dev = (v - mean) / mean;
-      const cls = dev >= 0.30 ? 'pill-crit' : dev >= 0.10 ? 'pill-warn' : dev <= -0.10 ? 'pill-good' : '';
-      return `<td class="${cls}">${fmtNum(v, 0)}</td>`;
-    }).join('');
-    return `<tr><td>${s.name}</td>${cells}</tr>`;
-  }).join('');
-
-  $('#heatmapTableBody').innerHTML = cols.length ? (brandRow + storeRows) : `<tr><td style="color:var(--muted)">이 조닝에는 매장별 데이터가 없습니다.</td></tr>`;
-}
-
-$('#heatmapCategorySelect').addEventListener('change', renderStoreHeatmapTable);
+// "매장별 히트맵"·"메뉴 진단" 탭 자체를 없애면서 이 두 탭 전용 렌더 코드를 정리함 — 다른 어떤 탭도
+// storeHeatmapCache/menuDiagnosisCache를 읽지 않는 것을 확인했다.
 
 // 메뉴별 인당소비량(소비가중평균)을 카테고리 단위로 합산해 대시보드 실적에 반영.
 // consumptionResults는 computeMenuConsumption()의 결과(옵션) — 메뉴마다 운영패턴이 달라 손님 수 분모가
@@ -3431,26 +3280,40 @@ function cleanPastedValue(raw, inputType) {
 // 배치 파이프라인이 아니라 우리 앱의 실시간 계산 엔진(computeMenuConsumption 등)을 재사용한다.
 // 1단계(뼈대): 안쪽 탭 전환 + 기간 컨트롤 기본값만 — 실제 표 렌더는 다음 단계에서 연결한다.
 // =====================================================================
-let pivotTab = 'A';
+let pivotTab = 'T';
 // 탭 전환/필터 변경마다 늘어나는 토큰 — 계산이 오래 걸리는 동안(①②③ 전부 수 초~수 분) 사용자가 다른 탭으로
 // 넘어가면, 나중에 끝난 이전 요청이 지금 보고 있는 탭의 결과를 덮어쓰는 경쟁 상태를 막기 위함.
 // 매 로드 시작 시 증가시키고, await 이후 값이 바뀌었으면(그 사이 다른 로드가 시작됐으면) 렌더링을 건너뛴다.
 let pivotLoadToken = 0;
 function setPivotTab(t) {
   pivotTab = t;
-  $$('.pivot-tab-btn').forEach(b => b.classList.toggle('is-on', b.dataset.pivotTab === t));
+  $$('.pivot-tab-btn[data-pivot-tab]').forEach(b => b.classList.toggle('is-on', b.dataset.pivotTab === t));
+  $('#pivotPanelTarget').style.display = t === 'T' ? '' : 'none';
+  $('#pivotPanelMain').style.display = t === 'T' ? 'none' : '';
   $('#pivotCtlAB').style.display = (t === 'A' || t === 'B') ? '' : 'none';
   $('#pivotCtlC').style.display = t === 'C' ? '' : 'none';
   $('#pivotCtlD').style.display = t === 'D' ? '' : 'none';
   $('#pivotVeSummary').style.display = t === 'D' ? '' : 'none';
   $('#pivotStoreSelectBox').style.display = t === 'A' ? '' : 'none';
   $('#pivotResetOrderBtn').style.display = t === 'B' ? '' : 'none';
+  if (t === 'T') loadDashboard();
   if (t === 'A' || t === 'B') loadPivotCompareView();
   if (t === 'C') loadPivotTimeSeriesView();
   if (t === 'D') loadPivotVEView();
 }
-$$('.pivot-tab-btn').forEach(btn => {
+$$('.pivot-tab-btn[data-pivot-tab]').forEach(btn => {
   btn.addEventListener('click', () => setPivotTab(btn.dataset.pivotTab));
+});
+
+// 시즌설계·데이터 그룹처럼, 피벗과 같은 서브탭 디자인(.pivot-tabs/.pivot-tab-btn)을 재사용하되
+// 피벗 전용 로직(setPivotTab)과는 무관하게 그냥 보이기/숨기기만 하면 되는 탭들의 공용 처리.
+$$('.pivot-tab-btn[data-subtab]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const panel = btn.closest('.tab-panel');
+    $$('.pivot-tab-btn[data-subtab]', panel).forEach(b => b.classList.toggle('is-on', b === btn));
+    $$('.subtab-panel', panel).forEach(p => p.classList.toggle('is-active', p.id === 'subtab-' + btn.dataset.subtab));
+    if (btn.dataset.subtab === 'market' && !marketViewLoaded) { marketViewLoaded = true; loadMarketView(); }
+  });
 });
 
 function renderPivotWeekOptions() {

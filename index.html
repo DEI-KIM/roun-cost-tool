@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>로운 원가설계판</title>
-<link rel="stylesheet" href="style.css?v=202608201530">
+<link rel="stylesheet" href="style.css?v=202608202000">
 </head>
 <body>
 
@@ -48,91 +48,79 @@
   </header>
 
   <nav class="tab-nav">
-    <button class="tab-btn is-active" data-tab="dashboard">대시보드</button>
-    <button class="tab-btn" data-tab="pivot">피벗</button>
-    <button class="tab-btn" data-tab="target-cost">목표원가</button>
-    <button class="tab-btn" data-tab="input">설계원가</button>
-    <button class="tab-btn" data-tab="bom">레시피 등록</button>
-    <button class="tab-btn" data-tab="menu-consumption">메뉴별 소비액</button>
-    <button class="tab-btn" data-tab="menu-diagnosis">메뉴 진단</button>
-    <button class="tab-btn" data-tab="store-heatmap">매장별 히트맵</button>
+    <button class="tab-btn is-active" data-tab="pivot">대시보드</button>
+    <button class="tab-btn" data-tab="season-design">시즌설계</button>
     <button class="tab-btn" data-tab="produce">농산 모니터링</button>
-    <button class="tab-btn" data-tab="usage">자재 사용량</button>
-    <button class="tab-btn" data-tab="market">시장 데이터</button>
-    <button class="tab-btn" data-tab="sales">매출/객수</button>
+    <button class="tab-btn" data-tab="data-group">데이터</button>
   </nav>
 
   <main class="tab-content">
 
-    <!-- Tab 1: 대시보드 -->
-    <section id="tab-dashboard" class="tab-panel is-active">
+    <!-- Tab 1: 대시보드 (구 대시보드 + 피벗을 하나로 합침 — 목표/비교/전매장/시계열/VE 서브탭) -->
+    <section id="tab-pivot" class="tab-panel is-active">
       <div class="panel-head">
-        <h2>브랜드 원가 대시보드</h2>
-        <p class="panel-sub">선택한 시즌의 목표·설계·실적 원가율을 한눈에 비교합니다.</p>
-      </div>
-
-      <div class="kpi-row" id="kpiRow"></div>
-
-      <div class="card" id="feedbackCard">
-        <div class="card-head">
-          <h3>피드백</h3>
-          <span class="hint" id="feedbackSavedHint"></span>
-        </div>
-        <textarea id="feedbackNoteInput" class="feedback-note-input" rows="5" placeholder="이번 시즌 원가 관련 메모를 자유롭게 남겨보세요."></textarea>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h3>조닝별 원가 비교</h3>
-          <span class="hint">목표값은 "목표원가" 탭에서 입력합니다. 실적은 "메뉴별 소비액" 탭의 "인당소비량 자동계산"으로 채워집니다.</span>
-        </div>
-        <div class="table-scroll">
-          <table class="data-table" id="dashboardTable">
-            <colgroup>
-              <col style="width:16%">
-              <col><col><col><col><col><col><col><col><col><col>
-            </colgroup>
-            <thead>
-              <tr>
-                <th rowspan="2">구분</th>
-                <th colspan="4">원가율</th>
-                <th colspan="3">g당원가</th>
-                <th colspan="3">인당소비량</th>
-              </tr>
-              <tr>
-                <th>목표</th><th>설계</th><th>실적</th><th>목표대비</th>
-                <th>목표</th><th>설계</th><th>실적</th>
-                <th>목표</th><th>설계</th><th>실적</th>
-              </tr>
-            </thead>
-            <tbody id="dashboardBody"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h3>월별 실적 원가율 추이</h3>
-          <span class="hint">자재사용량·매출 데이터가 있는 달을 기준으로 계산됩니다.</span>
-        </div>
-        <div id="costTrendChartWrap"></div>
-      </div>
-    </section>
-
-    <!-- Tab: 피벗 (조닝→메뉴→자재 3축, 시즌과 무관하게 전체 기간) -->
-    <section id="tab-pivot" class="tab-panel">
-      <div class="panel-head">
-        <h2>조닝→메뉴→자재 피벗</h2>
-        <p class="panel-sub">존·메뉴·자재를 브랜드/매장군/매장 단위로 나란히 비교합니다. 시즌 선택과 무관하게 전체 기간을 다룹니다.</p>
+        <h2>대시보드</h2>
+        <p class="panel-sub">선택한 시즌의 목표·설계·실적을 비교하고, 존·메뉴·자재를 브랜드/매장군/매장 단위로 나란히 봅니다.</p>
       </div>
 
       <div class="pivot-tabs">
-        <button class="pivot-tab-btn is-on" data-pivot-tab="A" type="button">① 비교 (브랜드·모델·매장)</button>
+        <button class="pivot-tab-btn is-on" data-pivot-tab="T" type="button">목표</button>
+        <button class="pivot-tab-btn" data-pivot-tab="A" type="button">① 비교 (브랜드·모델·매장)</button>
         <button class="pivot-tab-btn" data-pivot-tab="B" type="button">② 전 매장</button>
         <button class="pivot-tab-btn" data-pivot-tab="C" type="button">③ 시계열</button>
         <button class="pivot-tab-btn" data-pivot-tab="D" type="button">④ VE (AS-IS→TO-BE)</button>
       </div>
 
+      <div id="pivotPanelTarget">
+        <div class="kpi-row" id="kpiRow"></div>
+
+        <div class="card" id="feedbackCard">
+          <div class="card-head">
+            <h3>피드백</h3>
+            <span class="hint" id="feedbackSavedHint"></span>
+          </div>
+          <textarea id="feedbackNoteInput" class="feedback-note-input" rows="5" placeholder="이번 시즌 원가 관련 메모를 자유롭게 남겨보세요."></textarea>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>조닝별 원가 비교</h3>
+            <span class="hint">목표값은 "시즌설계 › 목표원가"에서 입력합니다. 실적은 "시즌설계 › 메뉴별 소비액"의 "인당소비량 자동계산"으로 채워집니다.</span>
+          </div>
+          <div class="table-scroll">
+            <table class="data-table" id="dashboardTable">
+              <colgroup>
+                <col style="width:16%">
+                <col><col><col><col><col><col><col><col><col><col>
+              </colgroup>
+              <thead>
+                <tr>
+                  <th rowspan="2">구분</th>
+                  <th colspan="4">원가율</th>
+                  <th colspan="3">g당원가</th>
+                  <th colspan="3">인당소비량</th>
+                </tr>
+                <tr>
+                  <th>목표</th><th>설계</th><th>실적</th><th>목표대비</th>
+                  <th>목표</th><th>설계</th><th>실적</th>
+                  <th>목표</th><th>설계</th><th>실적</th>
+                </tr>
+              </thead>
+              <tbody id="dashboardBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>월별 실적 원가율 추이</h3>
+            <span class="hint">자재사용량·매출 데이터가 있는 달을 기준으로 계산됩니다.</span>
+          </div>
+          <div id="costTrendChartWrap"></div>
+        </div>
+      </div>
+
+      <div id="pivotPanelMain" style="display:none">
       <div class="pivot-ctl" id="pivotCtlAB">
         <label>단위:</label>
         <select id="pivotUnitSelect">
@@ -169,10 +157,20 @@
       <div class="pivot-wrap"><table class="pivot-table" id="pivotTable">
         <tbody><tr><td style="padding:24px;color:var(--muted)">준비 중입니다 — 다음 단계에서 데이터가 채워집니다.</td></tr></tbody>
       </table></div>
+      </div>
     </section>
 
-    <!-- Tab: 목표원가 -->
-    <section id="tab-target-cost" class="tab-panel">
+    <!-- 그룹: 시즌설계 (목표원가/설계원가/시즌 파일럿/레시피 등록/메뉴별 소비액) -->
+    <section id="tab-season-design" class="tab-panel">
+      <div class="pivot-tabs">
+        <button class="pivot-tab-btn is-on" data-subtab="target-cost" type="button">목표원가</button>
+        <button class="pivot-tab-btn" data-subtab="input" type="button">설계원가</button>
+        <button class="pivot-tab-btn" data-subtab="season-pilot" type="button">시즌 파일럿</button>
+        <button class="pivot-tab-btn" data-subtab="bom" type="button">레시피 등록</button>
+        <button class="pivot-tab-btn" data-subtab="menu-consumption" type="button">메뉴별 소비액</button>
+      </div>
+
+    <div id="subtab-target-cost" class="subtab-panel is-active">
       <div class="panel-head">
         <h2>목표원가</h2>
         <p class="panel-sub">시즌·조닝별 목표 원가를 입력합니다. 대시보드는 이 값을 그대로 가져와 비교합니다.</p>
@@ -207,10 +205,9 @@
           </table>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- Tab 2: 설계원가 -->
-    <section id="tab-input" class="tab-panel">
+    <div id="subtab-input" class="subtab-panel">
       <div class="panel-head">
         <h2>설계원가</h2>
         <p class="panel-sub">이 시즌의 목표원가를 정하고, 메뉴별 설계원가를 입력합니다.</p>
@@ -275,10 +272,46 @@
           </table>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- Tab: 레시피 등록 -->
-    <section id="tab-bom" class="tab-panel">
+    <div id="subtab-season-pilot" class="subtab-panel">
+      <div class="panel-head">
+        <h2>시즌 파일럿</h2>
+        <p class="panel-sub">시즌·조닝·메뉴별로 g당원가·인당소비량·운영패턴(199-229/일반/프리미엄)을 입력하면, 매장군별 예상 원가율과 브랜드 전체 예상 원가율(매장 매출 비중 가중)을 계산합니다. 실제 매출/자재 데이터와 무관한 가상 시나리오 계산입니다.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>메뉴 입력</h3>
+          <span class="hint">시즌~운영패턴(프리미엄) 8열, 엑셀에서 그대로 붙여넣기 가능. 시즌명은 줄마다 반복 입력.</span>
+        </div>
+        <div class="table-scroll">
+          <table class="data-table editable-grid" id="seasonPilotGrid">
+            <thead>
+              <tr><th>시즌</th><th>조닝</th><th>메뉴명</th><th>g당원가</th><th>인당소비량(g)</th><th>운영패턴(199-229)</th><th>운영패턴(일반)</th><th>운영패턴(프리미엄)</th><th></th></tr>
+            </thead>
+            <tbody id="seasonPilotGridBody"></tbody>
+          </table>
+        </div>
+        <div class="grid-actions">
+          <button id="addSeasonPilotRowBtn" class="btn btn-ghost btn-sm" type="button">+ 행 추가</button>
+          <button id="saveSeasonPilotBtn" class="btn btn-primary btn-sm" type="button">저장</button>
+          <span id="saveSeasonPilotMsg" class="form-msg"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h3>예상 원가율</h3>
+          <span class="hint">브랜드 값은 현재 시즌 실제 매장별 매출 비중으로 가중평균합니다 · 존/메뉴 행 클릭=접기/펼치기</span>
+        </div>
+        <div class="pivot-wrap"><table class="pivot-table" id="seasonPilotTable">
+          <tbody><tr><td style="padding:24px;color:var(--muted)">위에 메뉴를 입력하고 저장하면 결과가 표시됩니다.</td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <div id="subtab-bom" class="subtab-panel">
       <div class="panel-head">
         <h2>레시피 등록</h2>
         <p class="panel-sub">메뉴별로 들어가는 자재와 비율(g)을 시즌별로 등록합니다. 메뉴별 인당소비량 자동계산에 사용됩니다.</p>
@@ -328,10 +361,9 @@
           </table>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- Tab: 메뉴별 소비액 -->
-    <section id="tab-menu-consumption" class="tab-panel">
+    <div id="subtab-menu-consumption" class="subtab-panel">
       <div class="panel-head">
         <h2>메뉴별 소비액</h2>
         <p class="panel-sub">메뉴명과 g당원가는 설계원가 탭의 현재 시즌 메뉴 기준으로 자동 표시됩니다. 인당소비량은 레시피+자재사용량+매출/객수 데이터로 자동 계산됩니다.</p>
@@ -389,71 +421,7 @@
           </table>
         </div>
       </div>
-    </section>
-
-    <!-- Tab: 메뉴 진단 -->
-    <section id="tab-menu-diagnosis" class="tab-panel">
-      <div class="panel-head">
-        <h2>메뉴 진단</h2>
-        <p class="panel-sub">원가는 두 개의 곱입니다 — 객당원가 = 취식량(g/객) × 단가(원/g). 어느 쪽이 큰지에 따라 손댈 곳이 다릅니다. 단가가 문제면 공급처·대체재를, 취식량이 문제면 포션·조닝을 봐야 하고, 둘 다면 VE나 메뉴 교체를 검토합니다. (축산·야채·소스·토핑·육수는 대부분 단독자재라 g당단가 협상 외엔 손댈 방법이 없어 대상에서 제외했습니다)</p>
-      </div>
-
-      <div class="kpi-row" id="diagnosisQuadrantRow"></div>
-
-      <div class="card">
-        <div class="card-head">
-          <h3>메뉴별 긴급도</h3>
-          <div class="card-head-actions">
-            <span class="hint">긴급도</span>
-            <select id="diagnosisUrgencySelect">
-              <option value="all">전체</option>
-              <option value="즉시">즉시</option>
-              <option value="우선">우선</option>
-              <option value="검토">검토</option>
-              <option value="낮음">낮음</option>
-            </select>
-          </div>
-        </div>
-        <p class="hint" id="diagnosisMedianHint" style="padding:0 16px 8px"></p>
-        <div class="table-scroll">
-          <table class="data-table wide-first" id="diagnosisTable">
-            <colgroup>
-              <col style="width:8%"><col style="width:20%"><col style="width:15%">
-              <col style="width:10%"><col style="width:15%"><col style="width:16%"><col style="width:16%">
-            </colgroup>
-            <thead>
-              <tr>
-                <th>조닝</th><th>메뉴명</th><th>단가×취식</th><th>객당원가</th><th>유형</th><th>목표 g당원가</th><th>수정 객당원가</th>
-              </tr>
-            </thead>
-            <tbody id="diagnosisTableBody"></tbody>
-          </table>
-        </div>
-      </div>
-    </section>
-
-    <!-- Tab: 매장별 히트맵 -->
-    <section id="tab-store-heatmap" class="tab-panel">
-      <div class="panel-head">
-        <h2>매장별 히트맵</h2>
-        <p class="panel-sub">매장별 실제 단가가 아닌 브랜드 평균 g당원가 기준 근사치입니다(인당소비량만 매장별 실측, 단가는 브랜드 전체 공통 적용). 같은 메뉴(열) 안에서 매장 간 평균 대비 편차를 색으로 표시합니다 — 빨강: 평균보다 많이 나감, 초록: 평균보다 적게 나감.</p>
-      </div>
-
-      <div class="card">
-        <div class="card-head">
-          <h3>매장 × 메뉴 인당소비액</h3>
-          <div class="card-head-actions">
-            <span class="hint">조닝</span>
-            <select id="heatmapCategorySelect"></select>
-          </div>
-        </div>
-        <div class="table-scroll">
-          <table class="data-table" id="heatmapTable">
-            <thead><tr id="heatmapTableHeadRow"></tr></thead>
-            <tbody id="heatmapTableBody"></tbody>
-          </table>
-        </div>
-      </div>
+    </div>
     </section>
 
     <!-- Tab: 농산 모니터링 -->
@@ -496,9 +464,15 @@
       </div>
     </section>
 
+    <!-- 그룹: 데이터 (시장데이터/자재사용량/매출·객수) -->
+    <section id="tab-data-group" class="tab-panel">
+      <div class="pivot-tabs">
+        <button class="pivot-tab-btn is-on" data-subtab="market" type="button">시장 데이터</button>
+        <button class="pivot-tab-btn" data-subtab="usage" type="button">자재 사용량</button>
+        <button class="pivot-tab-btn" data-subtab="sales" type="button">매출/객수</button>
+      </div>
 
-    <!-- Tab 6: 자재 사용량 -->
-    <section id="tab-usage" class="tab-panel">
+    <div id="subtab-usage" class="subtab-panel">
       <div class="panel-head">
         <h2>자재 사용량</h2>
         <p class="panel-sub">매장별 자재 재고·실사용량 데이터를 시즌에 누적합니다.</p>
@@ -574,10 +548,9 @@
           </table>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- Tab: 시장 데이터 -->
-    <section id="tab-market" class="tab-panel">
+    <div id="subtab-market" class="subtab-panel is-active">
       <div class="panel-head">
         <h2>시장 데이터</h2>
         <p class="panel-sub">가락시장 등 시장 단가 엑셀 파일을 업로드하면 자동으로 저장됩니다.</p>
@@ -625,10 +598,9 @@
           </table>
         </div>
       </div>
-    </section>
+    </div>
 
-    <!-- Tab 7: 매출/객수 -->
-    <section id="tab-sales" class="tab-panel">
+    <div id="subtab-sales" class="subtab-panel">
       <div class="panel-head">
         <h2>매출/객수</h2>
         <p class="panel-sub">매장별 일자 매출·객수 데이터를 시즌에 누적합니다.</p>
@@ -679,6 +651,7 @@
           </table>
         </div>
       </div>
+    </div>
     </section>
 
   </main>
@@ -699,6 +672,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608201830"></script>
+<script src="app.js?v=202608202000"></script>
 </body>
 </html>
