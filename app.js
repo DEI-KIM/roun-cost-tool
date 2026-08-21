@@ -3625,7 +3625,7 @@ async function loadPivotCompareData() {
   });
   const stores = [...storeAgg.values()].sort((a, b) => b.guests - a.guests);
 
-  return { dateRange, seasonId, results: consumption.results, designByMenu, costByMenu, stores, flat, targetByCategory, targetPrice };
+  return { dateRange, seasonId, results, designByMenu, costByMenu, stores, flat, targetByCategory, targetPrice, fromCache };
 }
 
 // storeCodes에 속한 매장들의 실제 그램·손님수를 합산 (데이터 있는 매장만 그램에 반영, 손님수는 항상 반영).
