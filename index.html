@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>로운 원가설계판</title>
-<link rel="stylesheet" href="style.css?v=202608132345">
+<link rel="stylesheet" href="style.css?v=202608201530">
 </head>
 <body>
 
@@ -75,9 +75,10 @@
 
       <div class="card" id="feedbackCard">
         <div class="card-head">
-          <h3>조정 제안</h3>
+          <h3>피드백</h3>
+          <span class="hint" id="feedbackSavedHint"></span>
         </div>
-        <ul class="feedback-list" id="feedbackList"></ul>
+        <textarea id="feedbackNoteInput" class="feedback-note-input" rows="5" placeholder="이번 시즌 원가 관련 메모를 자유롭게 남겨보세요."></textarea>
       </div>
 
       <div class="card">
@@ -698,6 +699,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608132430"></script>
+<script src="app.js?v=202608201530"></script>
 </body>
 </html>

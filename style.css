@@ -326,14 +326,12 @@ table { font-variant-numeric: tabular-nums; }
 .filter-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .filter-row input, .filter-row select { flex: 1; min-width: 160px; }
 
-.feedback-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.feedback-list li {
-  padding: 7px 10px; border-radius: 4px; font-size: 12px;
-  border-left: 3px solid var(--line-strong);
+.feedback-note-input {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px; line-height: 1.5;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface);
+  color: var(--ink); resize: vertical;
 }
-.feedback-list li.sev-warn { background: var(--warn-soft); border-left-color: var(--warn); }
-.feedback-list li.sev-crit { background: var(--crit-soft); border-left-color: var(--crit); }
-.feedback-list li.sev-good { background: var(--good-soft); border-left-color: var(--good); }
+.feedback-note-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 /* ---------- History tab ---------- */
 .history-layout { display: flex; flex-direction: column; gap: 16px; }

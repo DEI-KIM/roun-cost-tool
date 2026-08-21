@@ -748,30 +748,27 @@ function renderCostTrendChart(months, ratios, targetRatio) {
     </svg>`;
 }
 
+// 예전엔 설계-실적 갭을 자동으로 문구화해 보여줬는데, 자동생성 문구 대신 직접 메모를 남기고
+// 싶다는 요청으로 수기 입력 텍스트로 바꿨다. season_targets.feedback_note에 시즌별로 저장한다.
 function renderFeedback() {
-  const list = $('#feedbackList');
-  const targetPrice = state.seasonTarget?.target_price_per_person ?? null;
-  const items = [];
-  state.categorySummary.forEach(r => {
-    const designRatio = computeCostRatio(r.design_cost_per_gram, r.design_consumption_per_person, targetPrice);
-    const actualRatioCalc = computeCostRatio(r.actual_cost_per_gram, r.actual_consumption_per_person, targetPrice);
-    if (designRatio == null || actualRatioCalc == null) return;
-    const gap = actualRatioCalc - designRatio;
-    if (gap <= 0) return;
-    const sev = gap >= 1 ? 'crit' : gap >= 0.3 ? 'warn' : 'good';
-    if (sev === 'good') return;
-    const gramGap = (r.actual_cost_per_gram != null && r.design_cost_per_gram != null)
-      ? (Number(r.actual_cost_per_gram) - Number(r.design_cost_per_gram)) : null;
-    const suggestion = gramGap
-      ? `g당원가를 약 ${gramGap.toFixed(2)}g 낮추거나, 인당소비량 조정을 검토하세요.`
-      : `자재단가 또는 레시피 투입량 조정을 검토하세요.`;
-    items.push({ sev, text: `${r.category} 실적원가율이 설계 대비 +${gap.toFixed(1)}%p 높습니다 → ${suggestion}` });
-  });
-  items.sort((a, b) => (b.sev === 'crit') - (a.sev === 'crit'));
-  list.innerHTML = items.length
-    ? items.map(i => `<li class="sev-${i.sev}">${i.text}</li>`).join('')
-    : `<li class="sev-good">모든 카테고리가 설계원가 범위 안에 있습니다.</li>`;
+  const input = $('#feedbackNoteInput');
+  input.value = state.seasonTarget?.feedback_note ?? '';
 }
+$('#feedbackNoteInput').addEventListener('change', async (e) => {
+  const seasonId = state.currentSeasonId;
+  if (!seasonId) return;
+  const hint = $('#feedbackSavedHint');
+  const payload = { feedback_note: e.target.value };
+  if (state.seasonTarget?.id) {
+    await sb.from('season_targets').update(payload).eq('id', state.seasonTarget.id);
+  } else {
+    const { data } = await sb.from('season_targets').insert({ ...payload, season_id: seasonId }).select().maybeSingle();
+    if (data) state.seasonTarget = data;
+  }
+  if (state.seasonTarget) state.seasonTarget.feedback_note = payload.feedback_note;
+  hint.textContent = '저장됨';
+  setTimeout(() => { if (hint.textContent === '저장됨') hint.textContent = ''; }, 2000);
+});
 
 // =====================================================================
 // Tab 2: Target + Menu design input
