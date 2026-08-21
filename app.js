@@ -1115,6 +1115,7 @@ $('#saveBomGridBtn').addEventListener('click', async () => {
 
   const { error } = await sb.from('recipe_items').upsert(finalRows, { onConflict: 'season_id,menu_name,material_code' });
   if (error) { flash($('#bomSaveMsg'), '저장 실패: ' + error.message, false); return; }
+  invalidateSeasonCalcCaches();
   bomGridBody.innerHTML = '';
   for (let i = 0; i < 3; i++) addBomRow();
   flash($('#bomSaveMsg'), `${finalRows.length}개 행이 저장되었습니다.${rows.length > finalRows.length ? ` (중복 ${rows.length - finalRows.length}건 병합됨)` : ''}`);
@@ -1539,6 +1540,41 @@ async function flattenRecipesForSeason(seasonId) {
   return { flatByMenu, cookedWeightByMenu, finalMenus, rawMaterialNameByCode, availabilityPatternByMenu, categoryByMenu };
 }
 
+// ---- 시즌 단위(레시피 전개·실제g당원가) 계산 캐싱 ----
+// 비교/전매장/시계열 탭이 탭을 바꾸거나 기간(월/주)만 바꿔도 매번 flattenRecipesForSeason +
+// computeActualCostPerGram(레시피 재조회 + 자재단가 RPC + 별칭조회 등 5개 이상 쿼리)을 처음부터
+// 다시 돌려서 체감 속도가 느렸다. 이 계산은 seasonId에만 의존하고(기간 필터와 무관), 종료된
+// 시즌은 실적이 다시 바뀌지 않으므로 세션 내내 재사용해도 안전하다. 진행 중 시즌은 자재사용량이
+// 계속 들어오므로 일정 시간(TTL)마다만 새로 계산해서 최신성과 속도를 절충한다.
+const SEASON_CALC_TTL_MS = 2 * 60 * 1000;
+const flatCache = new Map(); // seasonId -> { ts, promise }
+const costCache = new Map(); // seasonId -> { ts, promise }
+function seasonCacheGet(seasonId, cache) {
+  const entry = cache.get(seasonId);
+  if (!entry) return null;
+  const season = state.seasons.find(s => s.id === seasonId);
+  if (!(season && isSeasonClosed(season)) && Date.now() - entry.ts > SEASON_CALC_TTL_MS) return null;
+  return entry.promise;
+}
+function getFlatForSeason(seasonId) {
+  const cached = seasonCacheGet(seasonId, flatCache);
+  if (cached) return cached;
+  const p = flattenRecipesForSeason(seasonId);
+  flatCache.set(seasonId, { ts: Date.now(), promise: p });
+  return p;
+}
+function getActualCostPerGram(seasonId) {
+  const cached = seasonCacheGet(seasonId, costCache);
+  if (cached) return cached;
+  const p = computeActualCostPerGram(seasonId);
+  costCache.set(seasonId, { ts: Date.now(), promise: p });
+  return p;
+}
+// 레시피(BOM)나 자재 별칭을 저장하면 위 캐시가 낡은 값을 들고 있게 되므로, 저장 시점에 통째로 비운다
+// (어느 시즌이 영향받는지 매번 정확히 추적하는 것보다, 전체를 비우고 다음 조회에서 다시 계산하는
+// 편이 훨씬 단순하고 안전 — 비용도 탭 하나 다시 여는 정도라 무시할만함).
+function invalidateSeasonCalcCaches() { flatCache.clear(); costCache.clear(); }
+
 // ---- 자재명 유사도 (브랜드/공급처가 바뀌어 자재코드가 달라진 경우를 후보로 찾기 위함) ----
 // keepParenContent=false: 괄호와 그 안 내용을 통째로 제거 (브랜드가 괄호로 앞에 붙는 경우, 예: "(참고을)참기름")
 // keepParenContent=true : 괄호만 지우고 안의 글자는 남김 (핵심 단어가 괄호 안에 있는 경우, 예: "자숙스지(소스지:미국산)")
@@ -1648,6 +1684,7 @@ function renderAliasCandidates() {
       alt_material_code: c.alt_material_code, alt_material_name: c.alt_material_name, status,
     }, { onConflict: 'primary_material_code,alt_material_code' });
     if (error) { flash($('#aliasCandidatesMsg'), '저장 실패: ' + error.message, false); return; }
+    invalidateSeasonCalcCaches();
     aliasCandidatesCache = aliasCandidatesCache.filter((_, i) => i !== idx);
     renderAliasCandidates();
     flash($('#aliasCandidatesMsg'), status === 'confirmed'
@@ -2199,7 +2236,7 @@ async function buildMaterialPriceResolver(seasonId) {
 // 메뉴별 "실제 g당원가"를 계산한다. buildMaterialPriceResolver로 얻은 자재별 단가를 레시피 BOM에 곱해
 // 메뉴 단위로 합산한다.
 async function computeActualCostPerGram(seasonId) {
-  const flat = await flattenRecipesForSeason(seasonId);
+  const flat = await getFlatForSeason(seasonId);
   if (!flat) return { error: '레시피 데이터를 불러오지 못했습니다.' };
   const { flatByMenu, cookedWeightByMenu, finalMenus } = flat;
 
@@ -3602,11 +3639,11 @@ async function loadPivotCompareData() {
   if (closed) cachedRows = await fetchPivotSnapshot(seasonId, periodUnit, dateRange.start, dateRange.end);
 
   const basePromises = [
-    computeActualCostPerGram(seasonId),
+    getActualCostPerGram(seasonId),
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     fetchAllRows('store_sales', q => q.gte('sales_date', dateRange.start).lt('sales_date', nextDay(dateRange.end)),
       'store_code, store_name, sales_total, customers_total'),
-    flattenRecipesForSeason(seasonId),
+    getFlatForSeason(seasonId),
     fetchAllRows('category_summary', q => q.eq('season_id', seasonId)),
     getTargetPrice(seasonId),
   ];
@@ -3749,11 +3786,14 @@ function renderPivotCompare() {
     return { design: d, result: r, costPerGram, brandAmt };
   });
 
+  // 인당소비량(g)/인당소비액(원) 모드는 같은 셀에 "주값(부값)"을 같이 보여줘 글자수가 길어지므로
+  // 열 폭을 더 넓게 준다 — 좁은 채로 두면 매장이 여러 개일 때 옆 열 값과 겹쳐 보인다.
+  const colWidth = (mode === 'g' || mode === 'pg') ? 122 : 92;
   let H = '<thead><tr><th>존 / 메뉴·자재</th><th class="pivot-target-col">목표</th>';
   columns.forEach(c => {
     const dnd = (pivotTab === 'B' && c.ord != null)
-      ? ` draggable="true" ondragstart="pivotDragStore(event,${c.ord})" ondragover="event.preventDefault()" ondrop="pivotDropStore(event,${c.ord})" style="cursor:grab"`
-      : '';
+      ? ` draggable="true" ondragstart="pivotDragStore(event,${c.ord})" ondragover="event.preventDefault()" ondrop="pivotDropStore(event,${c.ord})" style="cursor:grab;width:${colWidth}px"`
+      : ` style="width:${colWidth}px"`;
     H += `<th${dnd}>${esc(c.label)}<br><span class="pivot-d">${c.count}개점 · ${(c.guests / 1000).toFixed(1)}천명</span></th>`;
   });
   H += '</tr></thead><tbody>';
@@ -3936,16 +3976,9 @@ function populatePivotTsFromSelect() {
     : pivotMonthRange(range.from, range.to).map(m => ({ value: m, label: m.slice(2) }));
   sel.innerHTML = opts.map(o => `<option value="${o.value}">${o.label}</option>`).join('');
   if (opts.some(o => o.value === cur)) { sel.value = cur; return; }
-  if (unit === 's') { sel.value = opts[0]?.value || ''; return; } // 시즌별은 개수가 적어 기본으로 처음부터 전부 보여준다
-  const dflt = unit === 'w' ? 16 : 12;
-  const todayStr = new Date().toISOString().slice(0, 10);
-  let anchorIdx = -1;
-  for (let i = 0; i < opts.length; i++) {
-    const cmp = unit === 'w' ? opts[i].value.split('|')[1] : opts[i].value + '-01';
-    if (cmp <= todayStr) anchorIdx = i; else break;
-  }
-  if (anchorIdx < 0) anchorIdx = opts.length - 1;
-  sel.value = opts[Math.max(0, anchorIdx - dflt + 1)]?.value || opts[0]?.value || '';
+  // 기본으로 저장된 기간 전체(가장 이른 시점부터 오늘까지)를 보여준다 — 표가 넓어지는 만큼은
+  // .pivot-wrap을 옆으로 드래그해서 보고, 필요하면 이 "시작" 선택으로 직접 좁혀서 볼 수 있다.
+  sel.value = opts[0]?.value || '';
 }
 
 async function loadPivotTimeSeriesData() {
@@ -3977,7 +4010,6 @@ async function loadPivotTimeSeriesData() {
   }
 
   const targetCode = $('#pivotTsTargetSelect').value;
-  const costCacheBySeasonId = new Map();
   const designsBySeasonId = new Map();
   const periodUnit = unit === 's' ? 'season' : unit === 'w' ? 'week' : 'month';
   const out = [];
@@ -3997,9 +4029,7 @@ async function loadPivotTimeSeriesData() {
       // 병렬로 돌린다 — 순서대로 돌리면 대기시간이 그냥 다 더해져서 훨씬 오래 걸린다.
       const cachedRows = closed ? await fetchPivotSnapshot(seasonId, periodUnit, p.start, p.end) : null;
 
-      const costPromise = costCacheBySeasonId.has(seasonId)
-        ? Promise.resolve(costCacheBySeasonId.get(seasonId))
-        : computeActualCostPerGram(seasonId).then(r => { costCacheBySeasonId.set(seasonId, r); return r; });
+      const costPromise = getActualCostPerGram(seasonId);
       const salesPromise = fetchAllRows('store_sales',
         q => q.gte('sales_date', p.start).lt('sales_date', nextDay(p.end)), 'sales_total, customers_total');
       // 종료된 시즌은 저장된 정확 계산 결과가 있으면 그대로 읽고(재계산 안 함), 없으면 정확 계산 후 저장해둔다
@@ -4068,12 +4098,14 @@ function renderPivotTimeSeries() {
   if (data.error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(data.error)}</td></tr></tbody>`; return; }
   const mode = $('#pivotTsModeSelect').value;
 
-  let H = '<thead><tr><th>지표 / 기간</th>';
+  // 기간이 많아질수록(전체 이력 기본 표시) 열 폭이 좁아지지 않고 최소폭을 지키게 해서, 넘치는 만큼
+  // .pivot-wrap을 옆으로 드래그해서 보게 한다(예전엔 width:100%라 기간이 몇 개든 억지로 욱여넣어졌음).
+  let H = `<thead><tr><th style="width:250px">지표 / 기간</th>`;
   let prevSeason = null;
   data.periods.forEach(p => {
     const tag = p.seasonName && p.seasonName !== prevSeason ? `<br><span class="pivot-seas">▼${esc(p.seasonName)}</span>` : '';
     prevSeason = p.seasonName || prevSeason;
-    H += `<th>${esc(p.label)}${tag}</th>`;
+    H += `<th style="width:88px">${esc(p.label)}${tag}</th>`;
   });
   H += '</tr></thead><tbody>';
 
