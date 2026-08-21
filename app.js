@@ -3,6 +3,12 @@ const SUPABASE_URL = 'https://mnqgqgwdoztdbdyhjqyo.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_V7ZsNdBMXGHxodVvI6mOTw_MB8PapC2';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// 물(음용수/정제수)은 레시피에서 원가가 항상 0원으로 등록되는 필수 충전재라, 실제 구매기록이 있을 수가
+// 없다(수돗물이라 자재사용량에 안 잡힘) — computeMenuConsumption의 waterRatio와 computeActualCostPerGram의
+// 가격근거 신뢰도(groundedRatio) 계산이 이 목록을 공유해서 "물을 많이 쓰는 국물류 메뉴"가 부당하게
+// 저신뢰로 판정되는 걸 막는다.
+const WATER_CODES = ['음용수', '정제수'];
+
 // Deleting thousands of ids in one .in() call makes the request URL too long and fails
 // with "Bad Request"; split into smaller chunks instead.
 async function deleteInChunks(table, ids, chunkSize = 200) {
@@ -1938,7 +1944,6 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
     return total;
   }
 
-  const WATER_CODES = ['음용수', '정제수'];
   function waterRatio(menu) {
     const bom = flatByMenu.get(menu);
     const cookedWeight = cookedWeightByMenu.get(menu);
@@ -2251,10 +2256,14 @@ async function computeActualCostPerGram(seasonId) {
 
     let totalCost = 0, totalGrams = 0, realGrams = 0, groundedGrams = 0;
     bom.forEach((grams, code) => {
-      totalGrams += grams;
       const p = priceForCode(code);
+      if (p) totalCost += grams * p.price;
+      // 물은 원가가 항상 0원이라 구매 근거(real/extended)가 있든 없든 최종 원가에 영향이 없다 —
+      // 물을 많이 쓰는 국물류 메뉴가 실제로는 문제없는데도 "가격 근거 부족"으로 원가가 안 뜨는 걸
+      // 막기 위해, 신뢰도 비율(분모) 계산에서는 물 그램수를 아예 빼고 본다.
+      if (WATER_CODES.includes(code)) return;
+      totalGrams += grams;
       if (!p) return;
-      totalCost += grams * p.price;
       if (p.isReal) realGrams += grams;
       if (p.isReal || p.isExtended) groundedGrams += grams;
     });
