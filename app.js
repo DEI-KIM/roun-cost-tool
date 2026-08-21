@@ -17,22 +17,17 @@ async function deleteInChunks(table, ids, chunkSize = 200) {
 // PostgREST caps a single request at 1000 rows by default; page through until exhausted.
 async function fetchAllRows(table, applyFilters, selectCols = '*') {
   const pageSize = 1000;
-  // 커서(keyset) 페이지네이션 — id > 마지막으로 받은 id로 다음 페이지를 받는다. OFFSET 방식(.range())은
-  // 페이지가 뒤로 갈수록(큰 오프셋일수록) Postgres가 그만큼 앞부분을 스캔하고 버려야 해서 점점 느려지는데,
-  // 시즌 전체 자재사용량처럼 수만~수십만 행짜리 조회에서 이게 누적되면 체감상 멈춘 것처럼 느려진다.
-  // id 기준 커서는 오프셋 크기와 무관하게 매 페이지가 항상 같은 속도로 나온다.
-  const needsId = selectCols !== '*' && !/\bid\b/.test(selectCols);
-  const effectiveSelect = needsId ? `id, ${selectCols}` : selectCols;
   let all = [];
-  let lastId = 0;
+  let from = 0;
   while (true) {
-    let q = sb.from(table).select(effectiveSelect);
+    let q = sb.from(table).select(selectCols);
     if (applyFilters) q = applyFilters(q);
-    const { data, error } = await q.order('id', { ascending: true }).gt('id', lastId).limit(pageSize);
+    // stable tiebreaker so .range() pages don't return duplicate/missing rows on tables past 1000 rows
+    const { data, error } = await q.order('id', { ascending: true }).range(from, from + pageSize - 1);
     if (error) return { data: null, error };
     all = all.concat(data || []);
     if (!data || data.length < pageSize) break;
-    lastId = data[data.length - 1].id;
+    from += pageSize;
   }
   return { data: all, error: null };
 }
@@ -1976,23 +1971,28 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
 // 레시피 등록 단가(최초 1회성 수기입력, 원/kg -> 원/g 환산)로 대체한다. computeActualCostPerGram과
 // 메뉴 진단 탭(자재별 원가 기여도 분석)이 이 로직을 공유한다.
 async function buildMaterialPriceResolver(seasonId) {
-  // 시즌 안에서 가장 최근 usage_month 하나만 필요한데, 예전엔 시즌 전체 자재사용량 행(시즌 하나에 수만~십만 행)의
-  // usage_month를 다 받아와서 그 중 최댓값을 구했다 — 정렬 후 1행만 요청하도록 바꿔서 대부분의 전송을 없앰.
   const season = state.seasons.find(s => s.id === seasonId);
+  if (!season?.start_month || !season?.end_month) return { error: '시즌 기간 정보가 없습니다.' };
+  const rangeStart = season.start_month, rangeEnd = nextDay(season.end_month);
 
   // 특정 한 달(예: 가장 최근 달)만 보면 그 달에만 가격이 급등/급락했을 때 시즌 전체 실단가가 왜곡된다
   // (예: 5월에 폭등했다가 7월에 폭락하면, 마지막 달만 볼 땐 폭락한 가격만 반영되고 5월의 높은 단가는
-  // 전혀 반영이 안 됨). 그래서 시즌 시작~끝 전체 기간의 실사용량을 다 모아 가중평균한다.
-  const [{ data: usageRows, error: usageErr }, { data: recipeRows }, aliasRes] = await Promise.all([
-    fetchAllRows('material_usage', q => applyDateFilterForSeason(q, 'period_end', seasonId),
-      'material_code, actual_usage_qty, actual_usage_amount, conversion_factor, usage_month'),
+  // 전혀 반영이 안 됨). 그래서 시즌 시작~끝 전체 기간의 실사용량을 다 모아 가중평균하는데, 시즌 하나에
+  // material_usage 행이 수만~수십만 개라 그걸 다 받아서 브라우저에서 합치면 너무 느려진다(실측 20분+) —
+  // Postgres RPC로 자재코드별 합계를 DB에서 미리 내서(자재 종류 수만큼만, 보통 수백 행) 받는다.
+  const [{ data: usageRows, error: usageErr }, { data: recipeRows }, aliasRes, minMonthRes, maxMonthRes] = await Promise.all([
+    sb.rpc('material_usage_totals_for_range', { p_start: rangeStart, p_end: rangeEnd }),
     fetchAllRows('recipe_items', q => q.eq('season_id', seasonId), 'material_code, material_price'),
     sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
+    sb.from('material_usage').select('usage_month').gte('period_end', rangeStart).lt('period_end', rangeEnd)
+      .not('usage_month', 'is', null).order('usage_month', { ascending: true }).limit(1).maybeSingle(),
+    sb.from('material_usage').select('usage_month').gte('period_end', rangeStart).lt('period_end', rangeEnd)
+      .not('usage_month', 'is', null).order('usage_month', { ascending: false }).limit(1).maybeSingle(),
   ]);
   if (usageErr) return { error: usageErr.message || String(usageErr) };
   if (!usageRows || !usageRows.length) return { error: '자재사용량 데이터가 없습니다.' };
-  const months = [...new Set(usageRows.map(r => r.usage_month).filter(Boolean))].sort();
-  const costMonth = months.length > 1 ? `${months[0]}~${months[months.length - 1]}` : (months[0] || null);
+  const minMonth = minMonthRes.data?.usage_month, maxMonth = maxMonthRes.data?.usage_month;
+  const costMonth = minMonth && maxMonth ? (minMonth === maxMonth ? minMonth : `${minMonth}~${maxMonth}`) : null;
   const confirmedAliases = aliasRes.data;
 
   const parent = new Map();
@@ -2008,14 +2008,15 @@ async function buildMaterialPriceResolver(seasonId) {
   (confirmedAliases || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
 
   // 별칭그룹(대표코드) 단위로 시즌 전체 총 사용금액/총 그램을 모아 가중평균 g당단가를 만든다.
+  // usageRows는 RPC가 자재코드별로 이미 합산해서 준 것(원본 구매행이 아니라 자재 종류 수만큼만 있음).
   const costByCluster = new Map(), gramsByCluster = new Map();
   (usageRows || []).forEach(r => {
-    if (!r.material_code || !r.actual_usage_qty) return;
-    const grams = Number(r.actual_usage_qty) * (Number(r.conversion_factor) || 0);
+    if (!r.material_code || !r.total_grams) return;
+    const grams = Number(r.total_grams) || 0;
     if (!grams) return;
     const key = find(r.material_code);
     gramsByCluster.set(key, (gramsByCluster.get(key) || 0) + grams);
-    costByCluster.set(key, (costByCluster.get(key) || 0) + (Number(r.actual_usage_amount) || 0));
+    costByCluster.set(key, (costByCluster.get(key) || 0) + (Number(r.total_amount) || 0));
   });
   const realPricePerGram = new Map(); // 대표코드 -> 원/g (시즌 전체 기간 브랜드 전체 가중평균)
   gramsByCluster.forEach((grams, key) => { if (grams > 0) realPricePerGram.set(key, costByCluster.get(key) / grams); });
