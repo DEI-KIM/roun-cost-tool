@@ -4100,7 +4100,7 @@ function renderPivotTimeSeries() {
 
   // 기간이 많아질수록(전체 이력 기본 표시) 열 폭이 좁아지지 않고 최소폭을 지키게 해서, 넘치는 만큼
   // .pivot-wrap을 옆으로 드래그해서 보게 한다(예전엔 width:100%라 기간이 몇 개든 억지로 욱여넣어졌음).
-  let H = `<thead><tr><th style="width:250px">지표 / 기간</th>`;
+  let H = `<thead><tr><th>지표 / 기간</th>`;
   let prevSeason = null;
   data.periods.forEach(p => {
     const tag = p.seasonName && p.seasonName !== prevSeason ? `<br><span class="pivot-seas">▼${esc(p.seasonName)}</span>` : '';
