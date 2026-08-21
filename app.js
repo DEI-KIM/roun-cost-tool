@@ -1233,8 +1233,12 @@ function renderMenuConsumptionView() {
       ? `<span class="${src.cls}">${src.label}${m.confidence != null ? ` ${m.confidence}%` : ''}</span>`
       : '<span style="color:var(--muted)">-</span>';
     const costSrc = COST_SOURCE_LABEL[m.cost_source];
+    // cost_month는 이제 시즌 전체 기간 평균이라 "2025-11~2026-03"처럼 범위로 올 수 있어, 각 쪽을 월 단위로 줄인다.
+    const costMonthLabel = m.cost_month
+      ? (m.cost_month.includes('~') ? m.cost_month.split('~').map(x => x.slice(0, 7)).join('~') : m.cost_month.slice(0, 7))
+      : null;
     const costBadge = costSrc
-      ? `<span class="${costSrc.cls}">${fmtNum(m.actual_cost_per_gram, 2)}</span>${m.cost_month ? ` <span class="hint">${m.cost_month.slice(0, 7)}</span>` : ''}`
+      ? `<span class="${costSrc.cls}">${fmtNum(m.actual_cost_per_gram, 2)}</span>${costMonthLabel ? ` <span class="hint">${costMonthLabel}</span>` : ''}`
       : '<span style="color:var(--muted)">-</span>';
     return `
     <tr data-menu="${m.menu_name}">
@@ -1969,22 +1973,21 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
 async function buildMaterialPriceResolver(seasonId) {
   // 시즌 안에서 가장 최근 usage_month 하나만 필요한데, 예전엔 시즌 전체 자재사용량 행(시즌 하나에 수만~십만 행)의
   // usage_month를 다 받아와서 그 중 최댓값을 구했다 — 정렬 후 1행만 요청하도록 바꿔서 대부분의 전송을 없앰.
-  let monthQ = sb.from('material_usage').select('usage_month');
-  monthQ = applyDateFilterForSeason(monthQ, 'period_end', seasonId);
-  const { data: latestRow, error: latestErr } = await monthQ
-    .not('usage_month', 'is', null)
-    .order('usage_month', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (latestErr) return { error: latestErr.message || String(latestErr) };
-  const latestMonth = latestRow?.usage_month;
-  if (!latestMonth) return { error: '자재사용량 데이터가 없습니다.' };
+  const season = state.seasons.find(s => s.id === seasonId);
 
-  const [{ data: usageRows }, { data: recipeRows }, aliasRes] = await Promise.all([
-    fetchAllRows('material_usage', q => q.eq('usage_month', latestMonth), 'material_code, actual_usage_qty, actual_usage_amount, conversion_factor'),
+  // 특정 한 달(예: 가장 최근 달)만 보면 그 달에만 가격이 급등/급락했을 때 시즌 전체 실단가가 왜곡된다
+  // (예: 5월에 폭등했다가 7월에 폭락하면, 마지막 달만 볼 땐 폭락한 가격만 반영되고 5월의 높은 단가는
+  // 전혀 반영이 안 됨). 그래서 시즌 시작~끝 전체 기간의 실사용량을 다 모아 가중평균한다.
+  const [{ data: usageRows, error: usageErr }, { data: recipeRows }, aliasRes] = await Promise.all([
+    fetchAllRows('material_usage', q => applyDateFilterForSeason(q, 'period_end', seasonId),
+      'material_code, actual_usage_qty, actual_usage_amount, conversion_factor, usage_month'),
     fetchAllRows('recipe_items', q => q.eq('season_id', seasonId), 'material_code, material_price'),
     sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
   ]);
+  if (usageErr) return { error: usageErr.message || String(usageErr) };
+  if (!usageRows || !usageRows.length) return { error: '자재사용량 데이터가 없습니다.' };
+  const months = [...new Set(usageRows.map(r => r.usage_month).filter(Boolean))].sort();
+  const costMonth = months.length > 1 ? `${months[0]}~${months[months.length - 1]}` : (months[0] || null);
   const confirmedAliases = aliasRes.data;
 
   const parent = new Map();
@@ -1999,7 +2002,7 @@ async function buildMaterialPriceResolver(seasonId) {
   };
   (confirmedAliases || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
 
-  // 별칭그룹(대표코드) 단위로 그 달 총 사용금액/총 그램을 모아 가중평균 g당단가를 만든다.
+  // 별칭그룹(대표코드) 단위로 시즌 전체 총 사용금액/총 그램을 모아 가중평균 g당단가를 만든다.
   const costByCluster = new Map(), gramsByCluster = new Map();
   (usageRows || []).forEach(r => {
     if (!r.material_code || !r.actual_usage_qty) return;
@@ -2009,17 +2012,17 @@ async function buildMaterialPriceResolver(seasonId) {
     gramsByCluster.set(key, (gramsByCluster.get(key) || 0) + grams);
     costByCluster.set(key, (costByCluster.get(key) || 0) + (Number(r.actual_usage_amount) || 0));
   });
-  const realPricePerGram = new Map(); // 대표코드 -> 원/g (그 달 브랜드 전체 가중평균)
+  const realPricePerGram = new Map(); // 대표코드 -> 원/g (시즌 전체 기간 브랜드 전체 가중평균)
   gramsByCluster.forEach((grams, key) => { if (grams > 0) realPricePerGram.set(key, costByCluster.get(key) / grams); });
 
-  // 이번 달 실단가가 없는 자재만, 최근 6개월 구매기록 평균으로 보완한다("헷징" 추정) — 시즌 기간이 짧아서
-  // (예: 1주일치만 등록) 그 안에 안 산 자재가 많을 때, 메뉴 전체가 통째로 계산에서 빠지는 걸 줄이기 위함.
-  // 실단가(이번 달)보다는 신뢰도가 낮지만, 레시피 등록 단가(1회성 수기입력, 검증 안 됨)보다는 실제 구매 근거가
-  // 있어 훨씬 낫다. 시즌 레시피가 실제로 쓰는 자재만 조회해서 material_usage 전체를 훑지 않는다.
+  // 시즌 안에 실사용 근거가 전혀 없는 자재만, 시즌 시작 전 6개월 구매기록 평균으로 보완한다("헷징" 추정) —
+  // 시즌 기간이 짧아서(예: 1주일치만 등록) 그 안에 안 산 자재가 많을 때, 메뉴 전체가 통째로 계산에서
+  // 빠지는 걸 줄이기 위함. 시즌 내 실단가보다는 신뢰도가 낮지만, 레시피 등록 단가(1회성 수기입력, 검증
+  // 안 됨)보다는 실제 구매 근거가 있어 훨씬 낫다. 시즌 레시피가 실제로 쓰는 자재만 조회한다.
   const codesNeedingExtended = [...new Set((recipeRows || []).map(r => r.material_code))]
     .filter(c => c && !realPricePerGram.has(find(c)));
   const extendedPricePerGram = new Map();
-  if (codesNeedingExtended.length) {
+  if (codesNeedingExtended.length && season?.start_month) {
     // 별칭그룹 대표코드만으로 조회하면 실제 구매기록은 "별칭"(예: 배추(국산,직송)) 쪽에 있어서 놓친다 —
     // 같은 클러스터에 속한 자재코드를 전부 모아서 조회해야 한다.
     const clusterMembers = new Map(); // 대표코드 -> 그 그룹에 속한 모든 원본 코드
@@ -2036,7 +2039,7 @@ async function buildMaterialPriceResolver(seasonId) {
       (clusterMembers.get(find(c)) || []).forEach(m => expandedCodes.add(m));
     });
     const expandedList = [...expandedCodes];
-    const sixMonthsAgoDate = new Date(latestMonth);
+    const sixMonthsAgoDate = new Date(season.start_month);
     sixMonthsAgoDate.setMonth(sixMonthsAgoDate.getMonth() - 6);
     const sixMonthsAgo = sixMonthsAgoDate.toISOString().slice(0, 10);
     let extRows = [];
@@ -2045,7 +2048,7 @@ async function buildMaterialPriceResolver(seasonId) {
       const batch = expandedList.slice(i, i + CH);
       const { data } = await fetchAllRows(
         'material_usage',
-        q => q.in('material_code', batch).gte('usage_month', sixMonthsAgo).lt('usage_month', latestMonth),
+        q => q.in('material_code', batch).gte('usage_month', sixMonthsAgo).lt('usage_month', season.start_month),
         'material_code, actual_usage_qty, actual_usage_amount, conversion_factor'
       );
       extRows = extRows.concat(data || []);
@@ -2081,7 +2084,7 @@ async function buildMaterialPriceResolver(seasonId) {
     return null;
   }
 
-  return { priceForCode, find, realPricePerGram, extendedPricePerGram, fallbackPriceByCode, costMonth: latestMonth };
+  return { priceForCode, find, realPricePerGram, extendedPricePerGram, fallbackPriceByCode, costMonth };
 }
 
 // 메뉴별 "실제 g당원가"를 계산한다. buildMaterialPriceResolver로 얻은 자재별 단가를 레시피 BOM에 곱해
@@ -2093,7 +2096,7 @@ async function computeActualCostPerGram(seasonId) {
 
   const pricing = await buildMaterialPriceResolver(seasonId);
   if (pricing.error) return pricing;
-  const { priceForCode, costMonth: latestMonth } = pricing;
+  const { priceForCode, costMonth } = pricing;
 
   const results = finalMenus.map(menu => {
     const bom = flatByMenu.get(menu);
@@ -2125,7 +2128,7 @@ async function computeActualCostPerGram(seasonId) {
     };
   });
 
-  return { results, costMonth: latestMonth };
+  return { results, costMonth };
 }
 
 // 목표 g당원가 입력값으로 수정 객당원가를 즉시(세션 한정) 계산해 같은 행의 출력 셀에 써준다. 저장하지 않음 — 새로고침하면 초기화됨.
@@ -3509,14 +3512,62 @@ let pivotCompareCache = null;
 let pivotCollapsed = {};
 let pivotOpenIng = {};
 let pivotTsCollapsed = {};
+
+// ---- 종료된 시즌 결과 캐싱 (pivot_snapshot 테이블) ----
+// ①②③ 탭 전부 "매장별 실사용 근거로 그램수 추정"(computeMenuConsumption의 매장별 IPF)이 제일 오래 걸리는데,
+// 이미 끝난 시즌은 원본 데이터가 더 안 바뀌니 한 번 계산한 결과(매장×메뉴별 그램·손님수)를 저장해두고
+// 재사용한다. 진행 중인 시즌은 계속 그때그때 새로 계산한다.
+function isSeasonClosed(season) {
+  if (!season?.end_month) return false;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  return season.end_month < todayStr;
+}
+async function fetchPivotSnapshot(seasonId, periodUnit, periodStart, periodEnd) {
+  const { data, error } = await fetchAllRows('pivot_snapshot', q => q
+    .eq('season_id', seasonId).eq('period_unit', periodUnit)
+    .eq('period_start', periodStart).eq('period_end', periodEnd));
+  if (error || !data || !data.length) return null;
+  return data;
+}
+// 저장된 스냅샷 행들을 computeMenuConsumption의 results 배열과 같은 모양(메뉴별 per_store)으로 복원한다 —
+// pivotGroupValue는 store_code/grams/store_customers만 보므로 이 세 필드만 있으면 충분하다.
+function reconstructResultsFromSnapshot(rows) {
+  const byMenu = new Map();
+  rows.forEach(r => {
+    if (!byMenu.has(r.menu_name)) byMenu.set(r.menu_name, { menu_name: r.menu_name, per_store: [] });
+    byMenu.get(r.menu_name).per_store.push({ store_code: r.store_code, grams: r.grams, store_customers: r.store_customers });
+  });
+  return [...byMenu.values()];
+}
+async function savePivotSnapshotFromResults(seasonId, periodUnit, periodStart, periodEnd, results) {
+  const rows = [];
+  (results || []).forEach(r => {
+    (r.per_store || []).forEach(s => {
+      rows.push({
+        season_id: seasonId, period_unit: periodUnit, period_start: periodStart, period_end: periodEnd,
+        store_code: s.store_code, menu_name: r.menu_name,
+        grams: s.grams ?? null, store_customers: s.store_customers ?? null,
+      });
+    });
+  });
+  if (!rows.length) return;
+  for (let i = 0; i < rows.length; i += 500) {
+    const batch = rows.slice(i, i + 500);
+    await sb.from('pivot_snapshot').upsert(batch, { onConflict: 'season_id,period_unit,period_start,period_end,store_code,menu_name' });
+  }
+}
+
 async function loadPivotCompareData() {
   const dateRange = pivotDateRangeFromControls();
   if (!dateRange) return { error: '기간을 선택해주세요.' };
   const seasonId = findSeasonIdForDate(dateRange.end);
   if (!seasonId) return { error: '해당 기간을 포함하는 시즌이 없습니다.' };
+  const season = state.seasons.find(s => s.id === seasonId);
+  const unit = $('#pivotUnitSelect').value;
+  const periodUnit = unit === 's' ? 'season' : unit === 'w' ? 'week' : 'month';
+  const closed = isSeasonClosed(season);
 
-  const [consumption, costResult, designsRes, salesRes, flat, categorySummaryRes, targetPrice] = await Promise.all([
-    computeMenuConsumption(null, dateRange),
+  const [costResult, designsRes, salesRes, flat, categorySummaryRes, targetPrice] = await Promise.all([
     computeActualCostPerGram(seasonId),
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     fetchAllRows('store_sales', q => q.gte('sales_date', dateRange.start).lt('sales_date', nextDay(dateRange.end)),
@@ -3525,11 +3576,22 @@ async function loadPivotCompareData() {
     fetchAllRows('category_summary', q => q.eq('season_id', seasonId)),
     getTargetPrice(seasonId),
   ]);
-  if (consumption.error) return { error: consumption.error };
   if (costResult.error) return { error: costResult.error };
   if (designsRes.error) return { error: designsRes.error.message || String(designsRes.error) };
   if (salesRes.error) return { error: salesRes.error.message || String(salesRes.error) };
   if (categorySummaryRes.error) return { error: categorySummaryRes.error.message || String(categorySummaryRes.error) };
+
+  let results = null, fromCache = false;
+  if (closed) {
+    const cached = await fetchPivotSnapshot(seasonId, periodUnit, dateRange.start, dateRange.end);
+    if (cached) { results = reconstructResultsFromSnapshot(cached); fromCache = true; }
+  }
+  if (!results) {
+    const consumption = await computeMenuConsumption(null, dateRange);
+    if (consumption.error) return { error: consumption.error };
+    results = consumption.results;
+    if (closed) savePivotSnapshotFromResults(seasonId, periodUnit, dateRange.start, dateRange.end, results);
+  }
 
   const designByMenu = new Map();
   (designsRes.data || []).forEach(d => { if (d.menu_name) designByMenu.set(d.menu_name, d); });
@@ -3600,8 +3662,10 @@ function pivotTargetTxt(mode, gramPerG, consumptionPerPerson, targetPrice) {
 function renderPivotCompare() {
   const data = pivotCompareCache;
   const tbl = $('#pivotTable');
-  if (!data) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>'; return; }
+  const cacheHint = $('#pivotCacheHint');
+  if (!data) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>'; if (cacheHint) cacheHint.textContent = ''; return; }
   if (data.error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(data.error)}</td></tr></tbody>`; return; }
+  if (cacheHint) cacheHint.textContent = data.fromCache ? '· 저장된 값(즉시 로드)' : '';
 
   const mode = $('#pivotModeSelect').value;
   const allCodes = data.stores.map(s => s.code);
@@ -3880,20 +3944,59 @@ async function loadPivotTimeSeriesData() {
 
   const targetCode = $('#pivotTsTargetSelect').value;
   const costCacheBySeasonId = new Map();
+  const designsBySeasonId = new Map();
+  const periodUnit = unit === 's' ? 'season' : unit === 'w' ? 'week' : 'month';
   const out = [];
   for (const p of periods) {
     const seasonId = findSeasonIdForDate(p.end);
     const season = state.seasons.find(s => s.id === seasonId);
     if (targetCode === 'brand') {
-      const consumption = await computeMenuConsumption(null, { start: p.start, end: p.end }, true);
-      if (consumption.error || !consumption.brandOnly) { out.push({ ...p, seasonName: season?.name }); continue; }
+      if (!designsBySeasonId.has(seasonId)) {
+        const { data } = await fetchAllRows('menu_designs', q => q.eq('season_id', seasonId));
+        const m = new Map();
+        (data || []).forEach(d => { if (d.menu_name) m.set(d.menu_name, d); });
+        designsBySeasonId.set(seasonId, m);
+      }
+      const designByMenu = designsBySeasonId.get(seasonId);
       if (!costCacheBySeasonId.has(seasonId)) costCacheBySeasonId.set(seasonId, await computeActualCostPerGram(seasonId));
       const costResult = costCacheBySeasonId.get(seasonId);
       const costByMenu = new Map((costResult.results || []).map(r => [r.menu_name, r.actual_cost_per_gram]));
+
+      // 손님수/매출은 그램 계산 방식(캐시든 실시간이든)과 무관하게 항상 직접 조회 — 가벼운 쿼리라 매번 새로 받는다.
+      const { data: periodSales } = await fetchAllRows('store_sales',
+        q => q.gte('sales_date', p.start).lt('sales_date', nextDay(p.end)), 'sales_total, customers_total');
+      const totalCustomers = (periodSales || []).reduce((a, r) => a + (Number(r.customers_total) || 0), 0);
+      const totalSales = (periodSales || []).reduce((a, r) => a + (Number(r.sales_total) || 0), 0);
+
+      // 종료된 시즌은 저장된 정확 계산 결과가 있으면 그대로 읽고, 없으면 이번에 정확 계산해서 저장해둔다
+      // (다음부터는 즉시 조회됨). 진행 중인 시즌은 계속 빠른 근사(brandOnly)를 쓴다 — 매번 5~6분 걸리는
+      // 정확 계산을 월/주차 단위로 반복하기엔 너무 느리고, 데이터도 계속 바뀌어 캐싱할 수 없다.
+      let gramsByMenu = null;
+      const closed = isSeasonClosed(season);
+      if (closed) {
+        const cached = await fetchPivotSnapshot(seasonId, periodUnit, p.start, p.end);
+        if (cached) {
+          gramsByMenu = new Map();
+          cached.forEach(r => gramsByMenu.set(r.menu_name, (gramsByMenu.get(r.menu_name) || 0) + (Number(r.grams) || 0)));
+        } else {
+          const consumption = await computeMenuConsumption(null, { start: p.start, end: p.end });
+          if (consumption.error) { out.push({ ...p, seasonName: season?.name }); continue; }
+          savePivotSnapshotFromResults(seasonId, periodUnit, p.start, p.end, consumption.results);
+          gramsByMenu = new Map();
+          consumption.results.forEach(r => {
+            gramsByMenu.set(r.menu_name, (r.per_store || []).reduce((a, s) => a + (s.grams || 0), 0));
+          });
+        }
+      } else {
+        const consumption = await computeMenuConsumption(null, { start: p.start, end: p.end }, true);
+        if (consumption.error || !consumption.brandOnly) { out.push({ ...p, seasonName: season?.name }); continue; }
+        gramsByMenu = consumption.gramsProducedByMenu;
+      }
+
       let totalAmt = 0, meatAmt = 0;
       const zoneAmt = {}, zoneGrams = {}, menuAmt = {}, menuGrams = {}, menuCategory = {};
-      consumption.designByMenu.forEach((d, menu) => {
-        const grams = consumption.gramsProducedByMenu.get(menu);
+      designByMenu.forEach((d, menu) => {
+        const grams = gramsByMenu.get(menu);
         if (grams == null || !d.category) return;
         const costPerGram = costByMenu.get(menu) ?? d.cost_per_gram;
         const amt = grams * (costPerGram || 0);
@@ -3904,7 +4007,7 @@ async function loadPivotTimeSeriesData() {
         if (d.category === '축산') meatAmt += amt;
       });
       out.push({ ...p, seasonName: season?.name, totalAmt, meatAmt, zoneAmt, zoneGrams, menuAmt, menuGrams, menuCategory,
-        totalCustomers: consumption.totalCustomers, netSales: consumption.totalSales / 1.1 });
+        totalCustomers, netSales: totalSales / 1.1 });
     } else {
       const [{ data: usage }, { data: sales }] = await Promise.all([
         fetchAllRows('material_usage', q => q.eq('store_code', targetCode).gte('period_end', p.start).lt('period_end', nextDay(p.end)), 'remark, actual_usage_amount'),
