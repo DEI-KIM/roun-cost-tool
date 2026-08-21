@@ -285,6 +285,11 @@
           <h3>메뉴 입력</h3>
           <span class="hint">시즌~인당소비량(프리미엄) 7열, 엑셀에서 그대로 붙여넣기 가능. 시즌명은 줄마다 반복 입력. 인당소비량은 "그 메뉴를 산 손님"이 아니라 그 매장형태 <b>전체 손님 기준 평균</b>으로(디너/주말 한정 메뉴면 자연히 낮게), 빈 칸=그 매장형태에서 미운영.</span>
         </div>
+        <div class="grid-actions">
+          <button id="addSeasonPilotRowBtn" class="btn btn-ghost btn-sm" type="button">+ 행 추가</button>
+          <button id="saveSeasonPilotBtn" class="btn btn-primary btn-sm" type="button">저장</button>
+          <span id="saveSeasonPilotMsg" class="form-msg"></span>
+        </div>
         <div class="table-scroll">
           <table class="data-table editable-grid" id="seasonPilotGrid">
             <thead>
@@ -292,11 +297,6 @@
             </thead>
             <tbody id="seasonPilotGridBody"></tbody>
           </table>
-        </div>
-        <div class="grid-actions">
-          <button id="addSeasonPilotRowBtn" class="btn btn-ghost btn-sm" type="button">+ 행 추가</button>
-          <button id="saveSeasonPilotBtn" class="btn btn-primary btn-sm" type="button">저장</button>
-          <span id="saveSeasonPilotMsg" class="form-msg"></span>
         </div>
       </div>
 
@@ -672,6 +672,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608211300"></script>
+<script src="app.js?v=202608211330"></script>
 </body>
 </html>

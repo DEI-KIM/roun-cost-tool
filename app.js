@@ -936,12 +936,20 @@ $('#saveSeasonPilotBtn').addEventListener('click', async () => {
     return;
   }
   if (!rows.length) { flash($('#saveSeasonPilotMsg'), '입력된 행이 없습니다.', false); return; }
-  const { error } = await sb.from('season_pilot_menu').upsert(rows, { onConflict: 'season_id,menu_name' });
+
+  // 같은 시즌+메뉴명 조합이 그리드에 두 번 이상 있으면 upsert가 "ON CONFLICT DO UPDATE command cannot
+  // affect row a second time" 오류로 통째로 실패한다 — 마지막 값만 남기고 병합해서 보낸다(레시피 등록
+  // 저장과 동일한 방식).
+  const dedup = new Map();
+  rows.forEach(r => dedup.set(`${r.season_id}||${r.menu_name}`, r));
+  const finalRows = [...dedup.values()];
+
+  const { error } = await sb.from('season_pilot_menu').upsert(finalRows, { onConflict: 'season_id,menu_name' });
   if (error) { flash($('#saveSeasonPilotMsg'), '저장 실패: ' + error.message, false); return; }
 
   seasonPilotGridBody.innerHTML = '';
   for (let i = 0; i < 5; i++) addSeasonPilotRow();
-  flash($('#saveSeasonPilotMsg'), `${rows.length}개 메뉴가 저장되었습니다.`);
+  flash($('#saveSeasonPilotMsg'), `${finalRows.length}개 메뉴가 저장되었습니다.`);
   await loadSeasonPilotView();
 });
 
