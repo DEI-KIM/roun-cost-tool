@@ -3423,6 +3423,10 @@ function cleanPastedValue(raw, inputType) {
 // 1단계(뼈대): 안쪽 탭 전환 + 기간 컨트롤 기본값만 — 실제 표 렌더는 다음 단계에서 연결한다.
 // =====================================================================
 let pivotTab = 'A';
+// 탭 전환/필터 변경마다 늘어나는 토큰 — 계산이 오래 걸리는 동안(①②③ 전부 수 초~수 분) 사용자가 다른 탭으로
+// 넘어가면, 나중에 끝난 이전 요청이 지금 보고 있는 탭의 결과를 덮어쓰는 경쟁 상태를 막기 위함.
+// 매 로드 시작 시 증가시키고, await 이후 값이 바뀌었으면(그 사이 다른 로드가 시작됐으면) 렌더링을 건너뛴다.
+let pivotLoadToken = 0;
 function setPivotTab(t) {
   pivotTab = t;
   $$('.pivot-tab-btn').forEach(b => b.classList.toggle('is-on', b.dataset.pivotTab === t));
@@ -3753,9 +3757,11 @@ $('#pivotResetOrderBtn').addEventListener('click', () => {
 });
 
 async function loadPivotCompareView() {
+  const myToken = ++pivotLoadToken;
   const tbl = $('#pivotTable');
   tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>';
   const data = await loadPivotCompareData();
+  if (myToken !== pivotLoadToken) return; // 그 사이 다른 탭/필터로 넘어감 — 이 결과는 버린다
   pivotCompareCache = data;
   if (!data.error && pivotTab === 'A') {
     const sel = $('#pivotStoreSelect');
@@ -3979,11 +3985,15 @@ function renderPivotTimeSeries() {
 }
 
 async function loadPivotTimeSeriesView() {
+  const myToken = ++pivotLoadToken;
   const tbl = $('#pivotTable');
   tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중... (기간이 많으면 시간이 걸릴 수 있어요)</td></tr></tbody>';
   await ensurePivotTsStoreOptions();
+  if (myToken !== pivotLoadToken) return;
   populatePivotTsFromSelect();
-  pivotTsCache = await loadPivotTimeSeriesData();
+  const result = await loadPivotTimeSeriesData();
+  if (myToken !== pivotLoadToken) return; // 그 사이 다른 탭/필터로 넘어감 — 이 결과는 버린다
+  pivotTsCache = result;
   renderPivotTimeSeries();
 }
 $('#pivotTsTargetSelect').addEventListener('change', loadPivotTimeSeriesView);
@@ -4186,10 +4196,12 @@ async function veSet(menuName, field, value) {
 }
 
 async function loadPivotVEView() {
+  const myToken = ++pivotLoadToken;
   const tbl = $('#pivotTable');
   tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>';
   veFactsCache = await buildVeFacts();
   const { data, error } = await sb.from('ve_plan').select('*');
+  if (myToken !== pivotLoadToken) return; // 그 사이 다른 탭/필터로 넘어감 — 이 결과는 버린다
   if (error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(error.message)}</td></tr></tbody>`; return; }
   vePlanCache = data || [];
   renderVE();
