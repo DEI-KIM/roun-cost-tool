@@ -407,6 +407,7 @@ async function loadAllForCurrentSeason() {
     loadSalesView(),
     loadMenuConsumptionView(),
     loadProduceMonitoring(),
+    loadSeasonPilotView(),
   ]);
   await loadRecipeLog();
 }
@@ -870,6 +871,161 @@ $('#saveMenuGridBtn').addEventListener('click', async () => {
   await loadDashboard();
   await loadRecipeLog();
 });
+
+// =====================================================================
+// Tab: 시즌 파일럿 — 실제 매출/자재사용량 데이터 없이, 시즌·조닝·메뉴별 g당원가·인당소비량·
+// 운영패턴만으로 매장군별(199-229/일반/프리미엄) 예상 원가율과 브랜드 전체 예상 원가율을 미리 그려보는
+// 가상 시나리오 계산기. season_pilot_menu 테이블에 저장하고, 현재 선택된 시즌 것만 계산해서 보여준다.
+// data-col: 0=시즌 1=조닝 2=메뉴명 3=g당원가 4=인당소비량 5=운영패턴(199-229) 6=운영패턴(일반) 7=운영패턴(프리미엄)
+// =====================================================================
+const seasonPilotGridBody = $('#seasonPilotGridBody');
+function addSeasonPilotRow() {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input type="text" data-col="0" list="seasonNameList"></td>
+    <td><input type="text" data-col="1" list="categoryList"></td>
+    <td><input type="text" data-col="2"></td>
+    <td><input type="number" step="0.01" data-col="3"></td>
+    <td><input type="number" step="1" data-col="4"></td>
+    <td><input type="text" data-col="5" list="patternList"></td>
+    <td><input type="text" data-col="6" list="patternList"></td>
+    <td><input type="text" data-col="7" list="patternList"></td>
+    <td><button type="button" class="row-del-btn" title="삭제">×</button></td>
+  `;
+  tr.querySelector('.row-del-btn').addEventListener('click', () => tr.remove());
+  seasonPilotGridBody.appendChild(tr);
+  return tr;
+}
+for (let i = 0; i < 5; i++) addSeasonPilotRow();
+$('#addSeasonPilotRowBtn').addEventListener('click', () => addSeasonPilotRow());
+attachPasteFill(seasonPilotGridBody, addSeasonPilotRow);
+
+$('#saveSeasonPilotBtn').addEventListener('click', async () => {
+  const rows = [];
+  const unresolvedSeasons = new Set();
+  for (const tr of $$('tr', seasonPilotGridBody)) {
+    const seasonName = tr.querySelector('input[data-col="0"]').value.trim();
+    const category = tr.querySelector('input[data-col="1"]').value;
+    const menu_name = tr.querySelector('input[data-col="2"]').value;
+    const cost_per_gram = tr.querySelector('input[data-col="3"]').value;
+    const consumption_per_person = tr.querySelector('input[data-col="4"]').value;
+    const availability_pattern_value = tr.querySelector('input[data-col="5"]').value;
+    const availability_pattern_regular = tr.querySelector('input[data-col="6"]').value;
+    const availability_pattern_premium = tr.querySelector('input[data-col="7"]').value;
+    if (!seasonName || !category || !menu_name) continue;
+    const season = state.seasons.find(s => s.name === seasonName);
+    if (!season) { unresolvedSeasons.add(seasonName); continue; }
+    rows.push({
+      season_id: season.id, category: normalizeCategory(category), menu_name: menu_name.trim(),
+      cost_per_gram: numOrNull(cost_per_gram), consumption_per_person: numOrNull(consumption_per_person),
+      availability_pattern_value: availability_pattern_value ? availability_pattern_value.trim() : null,
+      availability_pattern_regular: availability_pattern_regular ? availability_pattern_regular.trim() : null,
+      availability_pattern_premium: availability_pattern_premium ? availability_pattern_premium.trim() : null,
+    });
+  }
+  if (unresolvedSeasons.size) {
+    flash($('#saveSeasonPilotMsg'), `존재하지 않는 시즌명이 있어 저장하지 않았습니다: ${[...unresolvedSeasons].join(', ')} (상단 "+ 새 시즌"으로 먼저 만들어주세요)`, false);
+    return;
+  }
+  if (!rows.length) { flash($('#saveSeasonPilotMsg'), '입력된 행이 없습니다.', false); return; }
+  const { error } = await sb.from('season_pilot_menu').upsert(rows, { onConflict: 'season_id,menu_name' });
+  if (error) { flash($('#saveSeasonPilotMsg'), '저장 실패: ' + error.message, false); return; }
+
+  seasonPilotGridBody.innerHTML = '';
+  for (let i = 0; i < 5; i++) addSeasonPilotRow();
+  flash($('#saveSeasonPilotMsg'), `${rows.length}개 메뉴가 저장되었습니다.`);
+  await loadSeasonPilotView();
+});
+
+let seasonPilotCache = null;
+let seasonPilotCollapsed = {};
+const SEASON_PILOT_TIERS = [
+  { key: 'premium', label: '프리미엄', patternField: 'availability_pattern_premium' },
+  { key: 'regular', label: '일반', patternField: 'availability_pattern_regular' },
+  { key: 'value', label: '199-229', patternField: 'availability_pattern_value' },
+];
+async function loadSeasonPilotView() {
+  const tbl = $('#seasonPilotTable');
+  if (!tbl) return; // 아직 이 탭을 한 번도 안 열었으면 DOM에 없을 수 있음
+  const seasonId = state.currentSeasonId;
+  const season = state.seasons.find(s => s.id === seasonId);
+  if (!seasonId) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">시즌을 선택해주세요.</td></tr></tbody>'; return; }
+  tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>';
+
+  const [{ data: pilotRows, error }, targetPrice, salesRes] = await Promise.all([
+    sb.from('season_pilot_menu').select('*').eq('season_id', seasonId),
+    getTargetPrice(seasonId),
+    (season?.start_month && season?.end_month)
+      ? fetchAllRows('store_sales', q => q.gte('sales_date', season.start_month).lt('sales_date', nextDay(season.end_month)), 'store_code, store_name, sales_total')
+      : Promise.resolve({ data: [] }),
+  ]);
+  if (error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(error.message)}</td></tr></tbody>`; return; }
+
+  // 브랜드 값의 가중치 = 이 시즌 실제 매장군별 매출 비중(매장당이 아니라 매장군 전체 합산 매출 기준 —
+  // ①비교 피벗의 "브랜드" 열과 같은 방식).
+  const salesByType = { premium: 0, regular: 0, value: 0 };
+  (salesRes.data || []).forEach(r => {
+    const t = storeType(r.store_code, r.store_name);
+    salesByType[t] = (salesByType[t] || 0) + (Number(r.sales_total) || 0);
+  });
+  const totalSales = salesByType.premium + salesByType.regular + salesByType.value;
+
+  seasonPilotCache = { pilotRows: pilotRows || [], targetPrice, salesByType, totalSales };
+  renderSeasonPilotTable();
+}
+function seasonPilotTierAmt(rows, tierKey) {
+  const field = SEASON_PILOT_TIERS.find(t => t.key === tierKey).patternField;
+  return rows.reduce((sum, r) => {
+    const pattern = r[field];
+    if (!pattern || pattern === '(없음)') return sum;
+    return sum + (Number(r.cost_per_gram) || 0) * (Number(r.consumption_per_person) || 0);
+  }, 0);
+}
+function seasonPilotTierRatio(rows, tierKey, targetPrice) {
+  if (!targetPrice) return null;
+  return seasonPilotTierAmt(rows, tierKey) / targetPrice * 100;
+}
+function seasonPilotBrandRatio(rows, data) {
+  if (!data.totalSales) return null;
+  let weighted = 0;
+  SEASON_PILOT_TIERS.forEach(t => {
+    const r = seasonPilotTierRatio(rows, t.key, data.targetPrice);
+    if (r != null) weighted += r * (data.salesByType[t.key] || 0) / data.totalSales;
+  });
+  return weighted;
+}
+function renderSeasonPilotTable() {
+  const tbl = $('#seasonPilotTable');
+  const data = seasonPilotCache;
+  if (!tbl || !data) return;
+  if (!data.pilotRows.length) {
+    tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--muted)">입력된 메뉴가 없습니다. 위에서 메뉴를 입력하고 저장해주세요.</td></tr></tbody>`;
+    return;
+  }
+  const fmtR = r => r != null ? r.toFixed(1) + '%' : '—';
+  const byZone = {};
+  data.pilotRows.forEach(r => { (byZone[r.category] = byZone[r.category] || []).push(r); });
+  const zones = Object.keys(byZone).sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
+
+  const tierCells = rows => SEASON_PILOT_TIERS.map(t => `<td>${fmtR(seasonPilotTierRatio(rows, t.key, data.targetPrice))}</td>`).join('');
+
+  let H = '<thead><tr><th>존 / 메뉴</th><th>브랜드</th><th>프리미엄</th><th>일반</th><th>199-229</th></tr></thead><tbody>';
+  H += `<tr class="pivot-zone pivot-met"><td>【전체】</td><td>${fmtR(seasonPilotBrandRatio(data.pilotRows, data))}</td>${tierCells(data.pilotRows)}</tr>`;
+
+  zones.forEach(zone => {
+    const rows = byZone[zone];
+    const zid = 'pilot|' + zone;
+    H += `<tr class="pivot-zone" onclick="seasonPilotToggle('${esc(zid)}')"><td>${seasonPilotCollapsed[zid] ? '▸' : '▾'} 【${esc(zone)}】</td><td>${fmtR(seasonPilotBrandRatio(rows, data))}</td>${tierCells(rows)}</tr>`;
+    if (seasonPilotCollapsed[zid]) return;
+    rows.slice().sort((a, b) => ((Number(b.cost_per_gram) || 0) * (Number(b.consumption_per_person) || 0)) - ((Number(a.cost_per_gram) || 0) * (Number(a.consumption_per_person) || 0)))
+      .forEach(r => {
+        H += `<tr class="pivot-menu"><td title="${esc(r.menu_name)}">　${esc(r.menu_name)}</td><td>${fmtR(seasonPilotBrandRatio([r], data))}</td>${tierCells([r])}</tr>`;
+      });
+  });
+  H += '</tbody>';
+  tbl.innerHTML = H;
+}
+function seasonPilotToggle(zoneId) { seasonPilotCollapsed[zoneId] = !seasonPilotCollapsed[zoneId]; renderSeasonPilotTable(); }
 
 async function rebuildCategoryDesignRollup(seasonId) {
   const { data: menus, error } = await sb.from('menu_designs').select('*').eq('season_id', seasonId);
@@ -3313,6 +3469,7 @@ $$('.pivot-tab-btn[data-subtab]').forEach(btn => {
     $$('.pivot-tab-btn[data-subtab]', panel).forEach(b => b.classList.toggle('is-on', b === btn));
     $$('.subtab-panel', panel).forEach(p => p.classList.toggle('is-active', p.id === 'subtab-' + btn.dataset.subtab));
     if (btn.dataset.subtab === 'market' && !marketViewLoaded) { marketViewLoaded = true; loadMarketView(); }
+    if (btn.dataset.subtab === 'season-pilot') loadSeasonPilotView();
   });
 });
 
