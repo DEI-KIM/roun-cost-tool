@@ -17,17 +17,22 @@ async function deleteInChunks(table, ids, chunkSize = 200) {
 // PostgREST caps a single request at 1000 rows by default; page through until exhausted.
 async function fetchAllRows(table, applyFilters, selectCols = '*') {
   const pageSize = 1000;
+  // 커서(keyset) 페이지네이션 — id > 마지막으로 받은 id로 다음 페이지를 받는다. OFFSET 방식(.range())은
+  // 페이지가 뒤로 갈수록(큰 오프셋일수록) Postgres가 그만큼 앞부분을 스캔하고 버려야 해서 점점 느려지는데,
+  // 시즌 전체 자재사용량처럼 수만~수십만 행짜리 조회에서 이게 누적되면 체감상 멈춘 것처럼 느려진다.
+  // id 기준 커서는 오프셋 크기와 무관하게 매 페이지가 항상 같은 속도로 나온다.
+  const needsId = selectCols !== '*' && !/\bid\b/.test(selectCols);
+  const effectiveSelect = needsId ? `id, ${selectCols}` : selectCols;
   let all = [];
-  let from = 0;
+  let lastId = 0;
   while (true) {
-    let q = sb.from(table).select(selectCols);
+    let q = sb.from(table).select(effectiveSelect);
     if (applyFilters) q = applyFilters(q);
-    // stable tiebreaker so .range() pages don't return duplicate/missing rows on tables past 1000 rows
-    const { data, error } = await q.order('id', { ascending: true }).range(from, from + pageSize - 1);
+    const { data, error } = await q.order('id', { ascending: true }).gt('id', lastId).limit(pageSize);
     if (error) return { data: null, error };
     all = all.concat(data || []);
     if (!data || data.length < pageSize) break;
-    from += pageSize;
+    lastId = data[data.length - 1].id;
   }
   return { data: all, error: null };
 }
@@ -3567,7 +3572,13 @@ async function loadPivotCompareData() {
   const periodUnit = unit === 's' ? 'season' : unit === 'w' ? 'week' : 'month';
   const closed = isSeasonClosed(season);
 
-  const [costResult, designsRes, salesRes, flat, categorySummaryRes, targetPrice] = await Promise.all([
+  // 캐시 확인은 가벼운 단건 조회라 먼저 해보고, 없을 때만 느린 계산(computeMenuConsumption)을
+  // 나머지 조회들과 "같이" 병렬로 돌린다 — 순서대로(직렬로) 돌리면 원래 하나로 끝나던 대기시간이
+  // 두 배 가까이 늘어난다(실측: 이 실수로 5~6분짜리가 20분 넘게 걸림).
+  let cachedRows = null;
+  if (closed) cachedRows = await fetchPivotSnapshot(seasonId, periodUnit, dateRange.start, dateRange.end);
+
+  const basePromises = [
     computeActualCostPerGram(seasonId),
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     fetchAllRows('store_sales', q => q.gte('sales_date', dateRange.start).lt('sales_date', nextDay(dateRange.end)),
@@ -3575,19 +3586,19 @@ async function loadPivotCompareData() {
     flattenRecipesForSeason(seasonId),
     fetchAllRows('category_summary', q => q.eq('season_id', seasonId)),
     getTargetPrice(seasonId),
-  ]);
+  ];
+  if (!cachedRows) basePromises.push(computeMenuConsumption(null, dateRange));
+  const settled = await Promise.all(basePromises);
+  const [costResult, designsRes, salesRes, flat, categorySummaryRes, targetPrice] = settled;
   if (costResult.error) return { error: costResult.error };
   if (designsRes.error) return { error: designsRes.error.message || String(designsRes.error) };
   if (salesRes.error) return { error: salesRes.error.message || String(salesRes.error) };
   if (categorySummaryRes.error) return { error: categorySummaryRes.error.message || String(categorySummaryRes.error) };
 
   let results = null, fromCache = false;
-  if (closed) {
-    const cached = await fetchPivotSnapshot(seasonId, periodUnit, dateRange.start, dateRange.end);
-    if (cached) { results = reconstructResultsFromSnapshot(cached); fromCache = true; }
-  }
+  if (cachedRows) { results = reconstructResultsFromSnapshot(cachedRows); fromCache = true; }
   if (!results) {
-    const consumption = await computeMenuConsumption(null, dateRange);
+    const consumption = settled[6];
     if (consumption.error) return { error: consumption.error };
     results = consumption.results;
     if (closed) savePivotSnapshotFromResults(seasonId, periodUnit, dateRange.start, dateRange.end, results);
@@ -3958,37 +3969,41 @@ async function loadPivotTimeSeriesData() {
         designsBySeasonId.set(seasonId, m);
       }
       const designByMenu = designsBySeasonId.get(seasonId);
-      if (!costCacheBySeasonId.has(seasonId)) costCacheBySeasonId.set(seasonId, await computeActualCostPerGram(seasonId));
-      const costResult = costCacheBySeasonId.get(seasonId);
-      const costByMenu = new Map((costResult.results || []).map(r => [r.menu_name, r.actual_cost_per_gram]));
+      const closed = isSeasonClosed(season);
+      // 캐시 확인은 가벼운 단건 조회라 먼저 해보고, 없을 때만 느린 계산을 나머지 조회들과 "같이"
+      // 병렬로 돌린다 — 순서대로 돌리면 대기시간이 그냥 다 더해져서 훨씬 오래 걸린다.
+      const cachedRows = closed ? await fetchPivotSnapshot(seasonId, periodUnit, p.start, p.end) : null;
 
-      // 손님수/매출은 그램 계산 방식(캐시든 실시간이든)과 무관하게 항상 직접 조회 — 가벼운 쿼리라 매번 새로 받는다.
-      const { data: periodSales } = await fetchAllRows('store_sales',
+      const costPromise = costCacheBySeasonId.has(seasonId)
+        ? Promise.resolve(costCacheBySeasonId.get(seasonId))
+        : computeActualCostPerGram(seasonId).then(r => { costCacheBySeasonId.set(seasonId, r); return r; });
+      const salesPromise = fetchAllRows('store_sales',
         q => q.gte('sales_date', p.start).lt('sales_date', nextDay(p.end)), 'sales_total, customers_total');
+      // 종료된 시즌은 저장된 정확 계산 결과가 있으면 그대로 읽고(재계산 안 함), 없으면 정확 계산 후 저장해둔다
+      // (다음부터는 즉시 조회됨). 진행 중인 시즌은 계속 빠른 근사(brandOnly)를 쓴다 — 매번 5~6분 걸리는
+      // 정확 계산을 월/주차 단위로 반복하기엔 너무 느리고, 데이터도 계속 바뀌어 캐싱할 수 없다.
+      const consumptionPromise = cachedRows ? Promise.resolve(null)
+        : closed ? computeMenuConsumption(null, { start: p.start, end: p.end })
+        : computeMenuConsumption(null, { start: p.start, end: p.end }, true);
+
+      const [costResult, salesRes, consumption] = await Promise.all([costPromise, salesPromise, consumptionPromise]);
+      const costByMenu = new Map((costResult.results || []).map(r => [r.menu_name, r.actual_cost_per_gram]));
+      const periodSales = salesRes.data;
       const totalCustomers = (periodSales || []).reduce((a, r) => a + (Number(r.customers_total) || 0), 0);
       const totalSales = (periodSales || []).reduce((a, r) => a + (Number(r.sales_total) || 0), 0);
 
-      // 종료된 시즌은 저장된 정확 계산 결과가 있으면 그대로 읽고, 없으면 이번에 정확 계산해서 저장해둔다
-      // (다음부터는 즉시 조회됨). 진행 중인 시즌은 계속 빠른 근사(brandOnly)를 쓴다 — 매번 5~6분 걸리는
-      // 정확 계산을 월/주차 단위로 반복하기엔 너무 느리고, 데이터도 계속 바뀌어 캐싱할 수 없다.
       let gramsByMenu = null;
-      const closed = isSeasonClosed(season);
-      if (closed) {
-        const cached = await fetchPivotSnapshot(seasonId, periodUnit, p.start, p.end);
-        if (cached) {
-          gramsByMenu = new Map();
-          cached.forEach(r => gramsByMenu.set(r.menu_name, (gramsByMenu.get(r.menu_name) || 0) + (Number(r.grams) || 0)));
-        } else {
-          const consumption = await computeMenuConsumption(null, { start: p.start, end: p.end });
-          if (consumption.error) { out.push({ ...p, seasonName: season?.name }); continue; }
-          savePivotSnapshotFromResults(seasonId, periodUnit, p.start, p.end, consumption.results);
-          gramsByMenu = new Map();
-          consumption.results.forEach(r => {
-            gramsByMenu.set(r.menu_name, (r.per_store || []).reduce((a, s) => a + (s.grams || 0), 0));
-          });
-        }
+      if (cachedRows) {
+        gramsByMenu = new Map();
+        cachedRows.forEach(r => gramsByMenu.set(r.menu_name, (gramsByMenu.get(r.menu_name) || 0) + (Number(r.grams) || 0)));
+      } else if (closed) {
+        if (consumption.error) { out.push({ ...p, seasonName: season?.name }); continue; }
+        savePivotSnapshotFromResults(seasonId, periodUnit, p.start, p.end, consumption.results);
+        gramsByMenu = new Map();
+        consumption.results.forEach(r => {
+          gramsByMenu.set(r.menu_name, (r.per_store || []).reduce((a, s) => a + (s.grams || 0), 0));
+        });
       } else {
-        const consumption = await computeMenuConsumption(null, { start: p.start, end: p.end }, true);
         if (consumption.error || !consumption.brandOnly) { out.push({ ...p, seasonName: season?.name }); continue; }
         gramsByMenu = consumption.gramsProducedByMenu;
       }
