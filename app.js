@@ -873,10 +873,14 @@ $('#saveMenuGridBtn').addEventListener('click', async () => {
 });
 
 // =====================================================================
-// Tab: 시즌 파일럿 — 실제 매출/자재사용량 데이터 없이, 시즌·조닝·메뉴별 g당원가·인당소비량·
-// 운영패턴만으로 매장군별(199-229/일반/프리미엄) 예상 원가율과 브랜드 전체 예상 원가율을 미리 그려보는
-// 가상 시나리오 계산기. season_pilot_menu 테이블에 저장하고, 현재 선택된 시즌 것만 계산해서 보여준다.
-// data-col: 0=시즌 1=조닝 2=메뉴명 3=g당원가 4=인당소비량 5=운영패턴(199-229) 6=운영패턴(일반) 7=운영패턴(프리미엄)
+// Tab: 시즌 파일럿 — 실제 매출/자재사용량 데이터 없이, 시즌·조닝·메뉴별 g당원가와 매장형태별
+// 인당소비량만으로 매장군별(199-229/일반/프리미엄) 예상 원가율과 브랜드 전체 예상 원가율을 미리
+// 그려보는 가상 시나리오 계산기. season_pilot_menu 테이블에 저장하고, 현재 선택된 시즌 것만
+// 계산해서 보여준다. 매장형태별 인당소비량 칸이 비어있으면 그 매장형태에서 미운영으로 취급한다
+// (운영패턴을 별도로 안 받는 이유 — "그 메뉴를 살 수 있었던 손님" 기준이 아니라 "그 매장형태 전체
+// 손님" 기준으로 인당소비량을 입력하면, 디너/주말 한정 메뉴는 이미 낮은 숫자로 들어와 있어서
+// 운영패턴 정보가 따로 필요 없다).
+// data-col: 0=시즌 1=조닝 2=메뉴명 3=g당원가 4=인당소비량(199-229) 5=인당소비량(일반) 6=인당소비량(프리미엄)
 // =====================================================================
 const seasonPilotGridBody = $('#seasonPilotGridBody');
 function addSeasonPilotRow() {
@@ -887,9 +891,8 @@ function addSeasonPilotRow() {
     <td><input type="text" data-col="2"></td>
     <td><input type="number" step="0.01" data-col="3"></td>
     <td><input type="number" step="1" data-col="4"></td>
-    <td><input type="text" data-col="5" list="patternList"></td>
-    <td><input type="text" data-col="6" list="patternList"></td>
-    <td><input type="text" data-col="7" list="patternList"></td>
+    <td><input type="number" step="1" data-col="5"></td>
+    <td><input type="number" step="1" data-col="6"></td>
     <td><button type="button" class="row-del-btn" title="삭제">×</button></td>
   `;
   tr.querySelector('.row-del-btn').addEventListener('click', () => tr.remove());
@@ -908,19 +911,18 @@ $('#saveSeasonPilotBtn').addEventListener('click', async () => {
     const category = tr.querySelector('input[data-col="1"]').value;
     const menu_name = tr.querySelector('input[data-col="2"]').value;
     const cost_per_gram = tr.querySelector('input[data-col="3"]').value;
-    const consumption_per_person = tr.querySelector('input[data-col="4"]').value;
-    const availability_pattern_value = tr.querySelector('input[data-col="5"]').value;
-    const availability_pattern_regular = tr.querySelector('input[data-col="6"]').value;
-    const availability_pattern_premium = tr.querySelector('input[data-col="7"]').value;
+    const consumption_value = tr.querySelector('input[data-col="4"]').value;
+    const consumption_regular = tr.querySelector('input[data-col="5"]').value;
+    const consumption_premium = tr.querySelector('input[data-col="6"]').value;
     if (!seasonName || !category || !menu_name) continue;
     const season = state.seasons.find(s => s.name === seasonName);
     if (!season) { unresolvedSeasons.add(seasonName); continue; }
     rows.push({
       season_id: season.id, category: normalizeCategory(category), menu_name: menu_name.trim(),
-      cost_per_gram: numOrNull(cost_per_gram), consumption_per_person: numOrNull(consumption_per_person),
-      availability_pattern_value: availability_pattern_value ? availability_pattern_value.trim() : null,
-      availability_pattern_regular: availability_pattern_regular ? availability_pattern_regular.trim() : null,
-      availability_pattern_premium: availability_pattern_premium ? availability_pattern_premium.trim() : null,
+      cost_per_gram: numOrNull(cost_per_gram),
+      consumption_per_person_value: numOrNull(consumption_value),
+      consumption_per_person_regular: numOrNull(consumption_regular),
+      consumption_per_person_premium: numOrNull(consumption_premium),
     });
   }
   if (unresolvedSeasons.size) {
@@ -940,9 +942,9 @@ $('#saveSeasonPilotBtn').addEventListener('click', async () => {
 let seasonPilotCache = null;
 let seasonPilotCollapsed = {};
 const SEASON_PILOT_TIERS = [
-  { key: 'premium', label: '프리미엄', patternField: 'availability_pattern_premium' },
-  { key: 'regular', label: '일반', patternField: 'availability_pattern_regular' },
-  { key: 'value', label: '199-229', patternField: 'availability_pattern_value' },
+  { key: 'premium', label: '프리미엄', consumptionField: 'consumption_per_person_premium' },
+  { key: 'regular', label: '일반', consumptionField: 'consumption_per_person_regular' },
+  { key: 'value', label: '199-229', consumptionField: 'consumption_per_person_value' },
 ];
 async function loadSeasonPilotView() {
   const tbl = $('#seasonPilotTable');
@@ -974,11 +976,11 @@ async function loadSeasonPilotView() {
   renderSeasonPilotTable();
 }
 function seasonPilotTierAmt(rows, tierKey) {
-  const field = SEASON_PILOT_TIERS.find(t => t.key === tierKey).patternField;
+  const field = SEASON_PILOT_TIERS.find(t => t.key === tierKey).consumptionField;
   return rows.reduce((sum, r) => {
-    const pattern = r[field];
-    if (!pattern || pattern === '(없음)') return sum;
-    return sum + (Number(r.cost_per_gram) || 0) * (Number(r.consumption_per_person) || 0);
+    const consumption = r[field];
+    if (consumption == null || consumption === '') return sum; // 빈 칸 = 그 매장형태에서 미운영
+    return sum + (Number(r.cost_per_gram) || 0) * Number(consumption);
   }, 0);
 }
 function seasonPilotTierRatio(rows, tierKey, targetPrice) {
@@ -1017,7 +1019,7 @@ function renderSeasonPilotTable() {
     const zid = 'pilot|' + zone;
     H += `<tr class="pivot-zone" onclick="seasonPilotToggle('${esc(zid)}')"><td>${seasonPilotCollapsed[zid] ? '▸' : '▾'} 【${esc(zone)}】</td><td>${fmtR(seasonPilotBrandRatio(rows, data))}</td>${tierCells(rows)}</tr>`;
     if (seasonPilotCollapsed[zid]) return;
-    rows.slice().sort((a, b) => ((Number(b.cost_per_gram) || 0) * (Number(b.consumption_per_person) || 0)) - ((Number(a.cost_per_gram) || 0) * (Number(a.consumption_per_person) || 0)))
+    rows.slice().sort((a, b) => (seasonPilotBrandRatio([b], data) || 0) - (seasonPilotBrandRatio([a], data) || 0))
       .forEach(r => {
         H += `<tr class="pivot-menu"><td title="${esc(r.menu_name)}">　${esc(r.menu_name)}</td><td>${fmtR(seasonPilotBrandRatio([r], data))}</td>${tierCells([r])}</tr>`;
       });

@@ -277,18 +277,18 @@
     <div id="subtab-season-pilot" class="subtab-panel">
       <div class="panel-head">
         <h2>시즌 파일럿</h2>
-        <p class="panel-sub">시즌·조닝·메뉴별로 g당원가·인당소비량·운영패턴(199-229/일반/프리미엄)을 입력하면, 매장군별 예상 원가율과 브랜드 전체 예상 원가율(매장 매출 비중 가중)을 계산합니다. 실제 매출/자재 데이터와 무관한 가상 시나리오 계산입니다.</p>
+        <p class="panel-sub">시즌·조닝·메뉴별로 g당원가와 매장형태별(199-229/일반/프리미엄) 인당소비량을 입력하면, 매장군별 예상 원가율과 브랜드 전체 예상 원가율(매장 매출 비중 가중)을 계산합니다. 실제 매출/자재 데이터와 무관한 가상 시나리오 계산입니다.</p>
       </div>
 
       <div class="card">
         <div class="card-head">
           <h3>메뉴 입력</h3>
-          <span class="hint">시즌~운영패턴(프리미엄) 8열, 엑셀에서 그대로 붙여넣기 가능. 시즌명은 줄마다 반복 입력.</span>
+          <span class="hint">시즌~인당소비량(프리미엄) 7열, 엑셀에서 그대로 붙여넣기 가능. 시즌명은 줄마다 반복 입력. 인당소비량은 "그 메뉴를 산 손님"이 아니라 그 매장형태 <b>전체 손님 기준 평균</b>으로(디너/주말 한정 메뉴면 자연히 낮게), 빈 칸=그 매장형태에서 미운영.</span>
         </div>
         <div class="table-scroll">
           <table class="data-table editable-grid" id="seasonPilotGrid">
             <thead>
-              <tr><th>시즌</th><th>조닝</th><th>메뉴명</th><th>g당원가</th><th>인당소비량(g)</th><th>운영패턴(199-229)</th><th>운영패턴(일반)</th><th>운영패턴(프리미엄)</th><th></th></tr>
+              <tr><th>시즌</th><th>조닝</th><th>메뉴명</th><th>g당원가</th><th>인당소비량(199-229)</th><th>인당소비량(일반)</th><th>인당소비량(프리미엄)</th><th></th></tr>
             </thead>
             <tbody id="seasonPilotGridBody"></tbody>
           </table>
@@ -672,6 +672,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608202030"></script>
+<script src="app.js?v=202608202100"></script>
 </body>
 </html>
