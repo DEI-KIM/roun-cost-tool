@@ -1587,7 +1587,16 @@ function getActualCostPerGram(seasonId) {
 // 레시피(BOM)나 자재 별칭을 저장하면 위 캐시가 낡은 값을 들고 있게 되므로, 저장 시점에 통째로 비운다
 // (어느 시즌이 영향받는지 매번 정확히 추적하는 것보다, 전체를 비우고 다음 조회에서 다시 계산하는
 // 편이 훨씬 단순하고 안전 — 비용도 탭 하나 다시 여는 정도라 무시할만함).
-function invalidateSeasonCalcCaches() { flatCache.clear(); costCache.clear(); }
+// pivot_snapshot(종료 시즌 피벗 결과 캐시)도 자재/레시피 값에 의존하는데 만료 기준이 없어서(종료
+// 시즌은 "다시 안 바뀐다"는 전제로 영구 캐시) 여기서 같이 비워주지 않으면, 별칭을 새로 확정하거나
+// 레시피를 고쳐도 ①②③ 탭이 예전 계산값을 계속 보여주는 문제가 생긴다(실제로 겪음 — 자재 별칭
+// 확정 후 "메뉴별 소비액"엔 반영됐는데 피벗 탭만 그대로였음). 종료 시즌 결과는 캐시일 뿐이라
+// 지워도 다음 조회 때 다시 계산해서 채워지므로 안전하다.
+function invalidateSeasonCalcCaches() {
+  flatCache.clear();
+  costCache.clear();
+  sb.from('pivot_snapshot').delete().gt('id', 0).then(({ error }) => { if (error) console.error('pivot_snapshot 캐시 삭제 실패:', error); });
+}
 
 // ---- 자재명 유사도 (브랜드/공급처가 바뀌어 자재코드가 달라진 경우를 후보로 찾기 위함) ----
 // keepParenContent=false: 괄호와 그 안 내용을 통째로 제거 (브랜드가 괄호로 앞에 붙는 경우, 예: "(참고을)참기름")
