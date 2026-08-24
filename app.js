@@ -1094,7 +1094,7 @@ function renderSeasonPilotTable() {
   // 메뉴 행은 season_pilot_menu의 실제 한 행이라, 매장형태별 인당소비량을 원가율 옆에서 바로 고칠 수 있게 한다.
   const tierCellsEditable = r => SEASON_PILOT_TIERS.map(t => {
     const val = r[t.consumptionField];
-    const ratio = fmtR(seasonPilotTierRatio([r], data.priceByType));
+    const ratio = fmtR(seasonPilotTierRatio([r], t.key, data.priceByType));
     return `<td><input class="pilot-inline-in" type="number" step="any" value="${val ?? ''}" placeholder="g" data-menu="${esc(r.menu_name)}" data-tier="${t.key}" onchange="seasonPilotEditConsumption(this)"> <span class="pivot-d">${ratio}</span></td>`;
   }).join('');
 
