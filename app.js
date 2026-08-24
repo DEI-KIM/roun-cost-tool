@@ -4172,7 +4172,10 @@ function renderPivotTimeSeries() {
 
   // 기간이 많아질수록(전체 이력 기본 표시) 열 폭이 좁아지지 않고 최소폭을 지키게 해서, 넘치는 만큼
   // .pivot-wrap을 옆으로 드래그해서 보게 한다(예전엔 width:100%라 기간이 몇 개든 억지로 욱여넣어졌음).
-  let H = `<thead><tr><th>지표 / 기간</th>`;
+  // 시계열의 행 이름("원가율 %", "【축산】", 짧은 존/메뉴명)은 ①②탭의 존/메뉴·자재 이름보다 훨씬 짧아서
+  // 공용 CSS의 250px는 과하게 넓다 — 이 표에서만 첫 열을 좁게 덮어쓴다(표 하나에서 첫 행 폭이 전체
+  // 열 폭을 정하는 table-layout:fixed 특성상, 헤더 셀 하나에만 줘도 표 전체에 적용됨).
+  let H = `<thead><tr><th style="width:150px;max-width:150px">지표 / 기간</th>`;
   let prevSeason = null;
   data.periods.forEach(p => {
     const tag = p.seasonName && p.seasonName !== prevSeason ? `<br><span class="pivot-seas">▼${esc(p.seasonName)}</span>` : '';
