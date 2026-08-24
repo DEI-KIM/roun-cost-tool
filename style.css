@@ -444,6 +444,13 @@ table { font-variant-numeric: tabular-nums; }
 .pivot-table tr.pivot-ing td { font-size: 11.5px; color: var(--muted); background: var(--paper); }
 .pivot-table tr.pivot-ing td:first-child { padding-left: 40px; }
 
+/* 시즌 파일럿 결과표 인라인 수정(g당원가/인당소비량) — 좁은 셀 안에 숫자입력+원가율%을 같이 표시 */
+.pilot-inline-in {
+  width: 56px; font: 11.5px inherit; padding: 1px 4px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--surface); color: var(--ink); text-align: right;
+}
+.pilot-inline-in:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
 /* VE 편집 */
 .pivot-ve-in { font: 12px inherit; padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); width: 78px; text-align: right; }
 .pivot-ve-in.pivot-ve-wide { width: 100%; min-width: 220px; text-align: left; }

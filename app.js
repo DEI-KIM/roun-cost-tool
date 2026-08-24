@@ -1061,7 +1061,14 @@ function renderSeasonPilotTable() {
   data.pilotRows.forEach(r => { (byZone[r.category] = byZone[r.category] || []).push(r); });
   const zones = Object.keys(byZone).sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
 
+  // 존/전체 합계 행은 여러 메뉴를 묶은 값이라 직접 수정할 대상이 없다 — 숫자만 보여준다.
   const tierCells = rows => SEASON_PILOT_TIERS.map(t => `<td>${fmtR(seasonPilotTierRatio(rows, t.key, data.priceByType))}</td>`).join('');
+  // 메뉴 행은 season_pilot_menu의 실제 한 행이라, 매장형태별 인당소비량을 원가율 옆에서 바로 고칠 수 있게 한다.
+  const tierCellsEditable = r => SEASON_PILOT_TIERS.map(t => {
+    const val = r[t.consumptionField];
+    const ratio = fmtR(seasonPilotTierRatio([r], data.priceByType));
+    return `<td><input class="pilot-inline-in" type="number" step="any" value="${val ?? ''}" placeholder="g" data-menu="${esc(r.menu_name)}" data-tier="${t.key}" onchange="seasonPilotEditConsumption(this)"> <span class="pivot-d">${ratio}</span></td>`;
+  }).join('');
 
   let H = '<thead><tr><th>존 / 메뉴</th><th>브랜드</th><th>프리미엄</th><th>일반</th><th>199-229</th></tr></thead><tbody>';
   H += `<tr class="pivot-zone pivot-met"><td>【전체】</td><td>${fmtR(seasonPilotBrandRatio(data.pilotRows, data))}</td>${tierCells(data.pilotRows)}</tr>`;
@@ -1073,13 +1080,36 @@ function renderSeasonPilotTable() {
     if (seasonPilotCollapsed[zid]) return;
     rows.slice().sort((a, b) => (seasonPilotBrandRatio([b], data) || 0) - (seasonPilotBrandRatio([a], data) || 0))
       .forEach(r => {
-        H += `<tr class="pivot-menu"><td title="${esc(r.menu_name)}">　${esc(r.menu_name)}</td><td>${fmtR(seasonPilotBrandRatio([r], data))}</td>${tierCells([r])}</tr>`;
+        H += `<tr class="pivot-menu"><td title="${esc(r.menu_name)}">　${esc(r.menu_name)} ` +
+          `<input class="pilot-inline-in" type="number" step="any" value="${r.cost_per_gram ?? ''}" placeholder="g당원가" data-menu="${esc(r.menu_name)}" onchange="seasonPilotEditCost(this)"></td>` +
+          `<td>${fmtR(seasonPilotBrandRatio([r], data))}</td>${tierCellsEditable(r)}</tr>`;
       });
   });
   H += '</tbody>';
   tbl.innerHTML = H;
 }
 function seasonPilotToggle(zoneId) { seasonPilotCollapsed[zoneId] = !seasonPilotCollapsed[zoneId]; renderSeasonPilotTable(); }
+// 결과 표에서 g당원가/인당소비량을 바로 고치면 화면 재계산과 동시에 DB에도 저장한다 —
+// 위쪽 입력 그리드까지 스크롤해서 그 메뉴 줄을 찾아 고치는 게 메뉴가 많아지면 불편해서 추가함.
+function seasonPilotEditCost(el) {
+  const row = seasonPilotCache?.pilotRows.find(r => r.menu_name === el.dataset.menu);
+  if (!row) return;
+  row.cost_per_gram = numOrNull(el.value);
+  renderSeasonPilotTable();
+  seasonPilotSaveField(row.id, 'cost_per_gram', row.cost_per_gram);
+}
+function seasonPilotEditConsumption(el) {
+  const row = seasonPilotCache?.pilotRows.find(r => r.menu_name === el.dataset.menu);
+  const tier = SEASON_PILOT_TIERS.find(t => t.key === el.dataset.tier);
+  if (!row || !tier) return;
+  row[tier.consumptionField] = numOrNull(el.value);
+  renderSeasonPilotTable();
+  seasonPilotSaveField(row.id, tier.consumptionField, row[tier.consumptionField]);
+}
+async function seasonPilotSaveField(rowId, field, value) {
+  const { error } = await sb.from('season_pilot_menu').update({ [field]: value }).eq('id', rowId);
+  if (error) console.error('시즌 파일럿 결과표 수정 저장 실패:', error);
+}
 
 async function rebuildCategoryDesignRollup(seasonId) {
   const { data: menus, error } = await sb.from('menu_designs').select('*').eq('season_id', seasonId);
