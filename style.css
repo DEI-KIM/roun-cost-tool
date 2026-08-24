@@ -413,6 +413,12 @@ table { font-variant-numeric: tabular-nums; }
    테이블 전체가 컨테이너보다 넓어져 .pivot-wrap의 overflow:auto로 옆으로 드래그해서 보게 한다.
    (이전엔 width:100%라 열이 몇 개든 항상 억지로 욱여넣어져 값이 겹쳐 보였음) */
 .pivot-table { border-collapse: separate; border-spacing: 0; font-size: 12.5px; width: auto; min-width: 100%; table-layout: fixed; }
+/* 시계열 탭은 기간이 몇 개 안 될 때(예: 시즌별 4개) min-width:100%가 남는 공간을 열 폭에 강제로
+   늘려버려서, max-width를 걸어둔 첫 열(지표/기간)까지 같이 넓어지는 문제가 있었다(그리는 시점에
+   따라 max-width가 "줄어들 때"만 지켜지고 "억지로 늘어날 때"는 안 지켜지는 브라우저 동작 때문).
+   사용자가 오른쪽 끝까지 안 채워도 된다고 확인해줘서, 이 표만 min-width를 없애 지정한 폭만큼만
+   차지하게 한다(꽉 채워야 하는 ①②비교 탭은 이 클래스가 없어 기존 동작 그대로 유지). */
+.pivot-table.pivot-table-compact { min-width: 0; }
 .pivot-table th, .pivot-table td { padding: 3px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .pivot-table thead th {
   position: sticky; top: 0; background: var(--paper); z-index: 3; border-bottom: 2px solid var(--ink);

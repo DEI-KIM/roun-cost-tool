@@ -3805,6 +3805,7 @@ function pivotTargetTxt(mode, gramPerG, consumptionPerPerson, targetPrice) {
 function renderPivotCompare() {
   const data = pivotCompareCache;
   const tbl = $('#pivotTable');
+  tbl.classList.remove('pivot-table-compact'); // 시계열에서만 쓰는 좁은 폭 모드 — 다른 탭으로 오면 해제
   const cacheHint = $('#pivotCacheHint');
   if (!data) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>'; if (cacheHint) cacheHint.textContent = ''; return; }
   if (data.error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(data.error)}</td></tr></tbody>`; return; }
@@ -4169,6 +4170,8 @@ function renderPivotTimeSeries() {
   if (!data) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>'; return; }
   if (data.error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(data.error)}</td></tr></tbody>`; return; }
   const mode = $('#pivotTsModeSelect').value;
+  // 기간이 몇 개 안 될 땐 표를 화면폭까지 억지로 안 늘려도 된다고 확인받음 — 이 표만 min-width:100%를 뺀다.
+  tbl.classList.add('pivot-table-compact');
 
   // 기간이 많아질수록(전체 이력 기본 표시) 열 폭이 좁아지지 않고 최소폭을 지키게 해서, 넘치는 만큼
   // .pivot-wrap을 옆으로 드래그해서 보게 한다(예전엔 width:100%라 기간이 몇 개든 억지로 욱여넣어졌음).
@@ -4363,6 +4366,7 @@ function computeVE() {
 
 function renderVE() {
   const tbl = $('#pivotTable');
+  tbl.classList.remove('pivot-table-compact'); // 시계열에서만 쓰는 좁은 폭 모드 — 다른 탭으로 오면 해제
   const F = veFactsCache;
   if (!F) {
     tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">"즉시" 긴급도 메뉴가 없습니다 (메뉴 진단 탭 기준).</td></tr></tbody>';
