@@ -960,6 +960,35 @@ const SEASON_PILOT_TIERS = [
   { key: 'regular', label: '일반', consumptionField: 'consumption_per_person_regular' },
   { key: 'value', label: '199-229', consumptionField: 'consumption_per_person_value' },
 ];
+// 매장군별로 객단가(원/객)가 실제로 다른데(프리미엄이 199-229보다 비싸게 파는 등), 시즌 파일럿이
+// 시즌 하나에 대해 수기입력된 단일 목표가(season_targets.target_price_per_person)를 매장군 전부에
+// 똑같이 적용해서 원가율을 왜곡시키고 있었다 — 매장군별로 실제 객단가 기준 원가율을 보려면
+// 매장군마다 다른 분모(객단가)를 써야 한다. 가장 최근 달의 실제 매출/객수(store_sales)로
+// 매장군별 객단가를 직접 계산해서 쓴다(설계 단계의 "목표"가 아니라 "지금 실제로 받고 있는 가격" 기준).
+async function getRecentMonthPriceByType() {
+  const { data: latestRow } = await sb.from('store_sales').select('sales_date').order('sales_date', { ascending: false }).limit(1).maybeSingle();
+  const latestDate = latestRow?.sales_date;
+  if (!latestDate) return null;
+  const monthStart = latestDate.slice(0, 7) + '-01';
+  const monthEnd = nextMonthDate(monthStart);
+  const { data: rows } = await fetchAllRows('store_sales',
+    q => q.gte('sales_date', monthStart).lt('sales_date', monthEnd), 'store_code, store_name, sales_total, customers_total');
+  const byType = { premium: { sales: 0, customers: 0 }, regular: { sales: 0, customers: 0 }, value: { sales: 0, customers: 0 } };
+  (rows || []).forEach(r => {
+    const t = storeType(r.store_code, r.store_name);
+    if (!byType[t]) return;
+    byType[t].sales += Number(r.sales_total) || 0;
+    byType[t].customers += Number(r.customers_total) || 0;
+  });
+  const priceByType = {};
+  let totalSales = 0, totalCustomers = 0;
+  Object.entries(byType).forEach(([t, v]) => {
+    priceByType[t] = v.customers > 0 ? (v.sales / 1.1) / v.customers : null;
+    totalSales += v.sales; totalCustomers += v.customers;
+  });
+  const brandPrice = totalCustomers > 0 ? (totalSales / 1.1) / totalCustomers : null;
+  return { priceByType, brandPrice, month: monthStart.slice(0, 7) };
+}
 async function loadSeasonPilotView() {
   const tbl = $('#seasonPilotTable');
   if (!tbl) return; // 아직 이 탭을 한 번도 안 열었으면 DOM에 없을 수 있음
@@ -968,9 +997,9 @@ async function loadSeasonPilotView() {
   if (!seasonId) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">시즌을 선택해주세요.</td></tr></tbody>'; return; }
   tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>';
 
-  const [{ data: pilotRows, error }, targetPrice, salesRes] = await Promise.all([
+  const [{ data: pilotRows, error }, priceInfo, salesRes] = await Promise.all([
     sb.from('season_pilot_menu').select('*').eq('season_id', seasonId),
-    getTargetPrice(seasonId),
+    getRecentMonthPriceByType(),
     (season?.start_month && season?.end_month)
       ? fetchAllRows('store_sales', q => q.gte('sales_date', season.start_month).lt('sales_date', nextDay(season.end_month)), 'store_code, store_name, sales_total')
       : Promise.resolve({ data: [] }),
@@ -978,7 +1007,8 @@ async function loadSeasonPilotView() {
   if (error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(error.message)}</td></tr></tbody>`; return; }
 
   // 브랜드 값의 가중치 = 이 시즌 실제 매장군별 매출 비중(매장당이 아니라 매장군 전체 합산 매출 기준 —
-  // ①비교 피벗의 "브랜드" 열과 같은 방식).
+  // ①비교 피벗의 "브랜드" 열과 같은 방식). 객단가(분모)는 위에서 구한 최근월 실제값을 쓰고, 이 매출
+  // 비중(가중치)만 "지금 계획 중인 시즌"의 매장군별 매출 비중을 그대로 쓴다 — 둘은 서로 다른 목적.
   const salesByType = { premium: 0, regular: 0, value: 0 };
   (salesRes.data || []).forEach(r => {
     const t = storeType(r.store_code, r.store_name);
@@ -986,7 +1016,7 @@ async function loadSeasonPilotView() {
   });
   const totalSales = salesByType.premium + salesByType.regular + salesByType.value;
 
-  seasonPilotCache = { pilotRows: pilotRows || [], targetPrice, salesByType, totalSales };
+  seasonPilotCache = { pilotRows: pilotRows || [], priceByType: priceInfo?.priceByType || {}, brandPrice: priceInfo?.brandPrice ?? null, priceMonth: priceInfo?.month ?? null, salesByType, totalSales };
   renderSeasonPilotTable();
 }
 function seasonPilotTierAmt(rows, tierKey) {
@@ -997,15 +1027,16 @@ function seasonPilotTierAmt(rows, tierKey) {
     return sum + (Number(r.cost_per_gram) || 0) * Number(consumption);
   }, 0);
 }
-function seasonPilotTierRatio(rows, tierKey, targetPrice) {
-  if (!targetPrice) return null;
-  return seasonPilotTierAmt(rows, tierKey) / targetPrice * 100;
+function seasonPilotTierRatio(rows, tierKey, priceByType) {
+  const price = priceByType?.[tierKey];
+  if (!price) return null;
+  return seasonPilotTierAmt(rows, tierKey) / price * 100;
 }
 function seasonPilotBrandRatio(rows, data) {
   if (!data.totalSales) return null;
   let weighted = 0;
   SEASON_PILOT_TIERS.forEach(t => {
-    const r = seasonPilotTierRatio(rows, t.key, data.targetPrice);
+    const r = seasonPilotTierRatio(rows, t.key, data.priceByType);
     if (r != null) weighted += r * (data.salesByType[t.key] || 0) / data.totalSales;
   });
   return weighted;
@@ -1014,6 +1045,13 @@ function renderSeasonPilotTable() {
   const tbl = $('#seasonPilotTable');
   const data = seasonPilotCache;
   if (!tbl || !data) return;
+  const priceHint = $('#seasonPilotPriceHint');
+  if (priceHint) {
+    const fmtP = p => p != null ? fmtNum(p, 0) + '원' : '—';
+    priceHint.textContent = data.priceMonth
+      ? `기준 객단가(${data.priceMonth} 실측, VAT 제외): 프리미엄 ${fmtP(data.priceByType.premium)} · 일반 ${fmtP(data.priceByType.regular)} · 199-229 ${fmtP(data.priceByType.value)}`
+      : '기준 객단가를 계산할 매출 데이터가 없습니다.';
+  }
   if (!data.pilotRows.length) {
     tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--muted)">입력된 메뉴가 없습니다. 위에서 메뉴를 입력하고 저장해주세요.</td></tr></tbody>`;
     return;
@@ -1023,7 +1061,7 @@ function renderSeasonPilotTable() {
   data.pilotRows.forEach(r => { (byZone[r.category] = byZone[r.category] || []).push(r); });
   const zones = Object.keys(byZone).sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
 
-  const tierCells = rows => SEASON_PILOT_TIERS.map(t => `<td>${fmtR(seasonPilotTierRatio(rows, t.key, data.targetPrice))}</td>`).join('');
+  const tierCells = rows => SEASON_PILOT_TIERS.map(t => `<td>${fmtR(seasonPilotTierRatio(rows, t.key, data.priceByType))}</td>`).join('');
 
   let H = '<thead><tr><th>존 / 메뉴</th><th>브랜드</th><th>프리미엄</th><th>일반</th><th>199-229</th></tr></thead><tbody>';
   H += `<tr class="pivot-zone pivot-met"><td>【전체】</td><td>${fmtR(seasonPilotBrandRatio(data.pilotRows, data))}</td>${tierCells(data.pilotRows)}</tr>`;
