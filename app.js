@@ -1877,8 +1877,16 @@ function estimateGramsProduced({ flatByMenu, cookedWeightByMenu, finalMenus, fin
       const flatBOM = flatByMenu.get(menu) || new Map();
       const hasEvidence = [...new Set([...flatBOM.keys()].map(find))].some(key => materialUsers.has(key) && (residualByMaterial.get(key) || 0) > 1e-6);
       if (!hasEvidence) { onNoEvidence(menu); return; }
+      // 신뢰도(confidence)가 낮다는 건 IPF 배분 결과가 실제 자재사용 패턴을 거의 설명 못 한다는 뜻이라,
+      // x값 자체가 수백만g처럼 발산해버릴 수 있다(실측: 무관한 메뉴 20여 개가 한 그룹으로 얽힌 경우
+      // confidence 0.00~0.08에 x가 수천만~수억g으로 튐). 예전엔 이럴 때 'design_fallback'이라는 딱지만
+      // 붙이고 발산한 값을 그대로 썼는데, 그 값을 실제 설계값으로 바꿔치기하는 코드가 없어서 사실상
+      // "낮음" 표시만 된 틀린 숫자가 그대로 쓰이고 있었다. 신뢰도 낮은 배분값은 아예 버리고 "근거 없음"과
+      // 동일하게 처리해서(onNoEvidence) 이 매장은 이 메뉴 데이터없음으로 남기고, 다른 매장 데이터나
+      // 브랜드 전체 안전망(설계값 대체)으로 넘어가게 한다.
+      if (confidence < 0.6) { onNoEvidence(menu); return; }
       gramsProducedByMenu.set(menu, Math.max(0, x[menu] || 0));
-      sourceByMenu.set(menu, confidence >= 0.6 ? 'allocated' : 'design_fallback');
+      sourceByMenu.set(menu, 'allocated');
       confidenceByMenu.set(menu, Math.round(confidence * 100));
     });
   });
