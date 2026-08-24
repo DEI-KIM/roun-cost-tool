@@ -969,25 +969,48 @@ async function getRecentMonthPriceByType() {
   const { data: latestRow } = await sb.from('store_sales').select('sales_date').order('sales_date', { ascending: false }).limit(1).maybeSingle();
   const latestDate = latestRow?.sales_date;
   if (!latestDate) return null;
-  const monthStart = latestDate.slice(0, 7) + '-01';
-  const monthEnd = nextMonthDate(monthStart);
+  // 매장형태마다 매출 입력 시점이 다를 수 있다(예: 이번 달 시작 직후엔 일부 매장형태만 입력이 끝났고
+  // 나머지는 아직 안 들어옴) — "전체 공통의 가장 최근 달" 하나로 고정하면, 데이터가 늦게 들어오는
+  // 매장형태는 그 시점에 통째로 "—"(계산 불가)가 되어버린다(실측: 시즌 시작 직후 프리미엄/199-229가
+  // 전부 빠짐). 최근 3개월치를 모아 매장형태별로 "그 형태 자신의 가장 최근 유효한 달"을 각자 찾는다.
+  const windowStartDate = new Date(latestDate);
+  windowStartDate.setMonth(windowStartDate.getMonth() - 2);
+  const windowStart = windowStartDate.toISOString().slice(0, 7) + '-01';
   const { data: rows } = await fetchAllRows('store_sales',
-    q => q.gte('sales_date', monthStart).lt('sales_date', monthEnd), 'store_code, store_name, sales_total, customers_total');
-  const byType = { premium: { sales: 0, customers: 0 }, regular: { sales: 0, customers: 0 }, value: { sales: 0, customers: 0 } };
+    q => q.gte('sales_date', windowStart), 'store_code, store_name, sales_date, sales_total, customers_total');
+  const byTypeMonth = {};
   (rows || []).forEach(r => {
     const t = storeType(r.store_code, r.store_name);
-    if (!byType[t]) return;
-    byType[t].sales += Number(r.sales_total) || 0;
-    byType[t].customers += Number(r.customers_total) || 0;
+    const month = (r.sales_date || '').slice(0, 7);
+    if (!month) return;
+    if (!byTypeMonth[t]) byTypeMonth[t] = {};
+    if (!byTypeMonth[t][month]) byTypeMonth[t][month] = { sales: 0, customers: 0 };
+    byTypeMonth[t][month].sales += Number(r.sales_total) || 0;
+    byTypeMonth[t][month].customers += Number(r.customers_total) || 0;
   });
-  const priceByType = {};
+  const priceByType = {}, monthByType = {};
+  ['premium', 'regular', 'value'].forEach(t => {
+    const months = Object.keys(byTypeMonth[t] || {}).filter(m => byTypeMonth[t][m].customers > 0).sort();
+    const m = months[months.length - 1];
+    if (m) {
+      const v = byTypeMonth[t][m];
+      priceByType[t] = (v.sales / 1.1) / v.customers;
+      monthByType[t] = m;
+    } else {
+      priceByType[t] = null;
+      monthByType[t] = null;
+    }
+  });
+  // 브랜드 전체 값은 기존처럼 "전체 공통 가장 최근 달" 하나로 계산(대부분의 매장형태는 데이터가
+  // 같이 들어오므로 문제없고, 개별 매장형태 계산만 위처럼 각자 안전망을 둔다).
+  const latestMonth = latestDate.slice(0, 7);
   let totalSales = 0, totalCustomers = 0;
-  Object.entries(byType).forEach(([t, v]) => {
-    priceByType[t] = v.customers > 0 ? (v.sales / 1.1) / v.customers : null;
-    totalSales += v.sales; totalCustomers += v.customers;
+  Object.values(byTypeMonth).forEach(monthMap => {
+    const v = monthMap[latestMonth];
+    if (v) { totalSales += v.sales; totalCustomers += v.customers; }
   });
   const brandPrice = totalCustomers > 0 ? (totalSales / 1.1) / totalCustomers : null;
-  return { priceByType, brandPrice, month: monthStart.slice(0, 7) };
+  return { priceByType, brandPrice, month: latestMonth, monthByType };
 }
 async function loadSeasonPilotView() {
   const tbl = $('#seasonPilotTable');
@@ -1016,7 +1039,7 @@ async function loadSeasonPilotView() {
   });
   const totalSales = salesByType.premium + salesByType.regular + salesByType.value;
 
-  seasonPilotCache = { pilotRows: pilotRows || [], priceByType: priceInfo?.priceByType || {}, brandPrice: priceInfo?.brandPrice ?? null, priceMonth: priceInfo?.month ?? null, salesByType, totalSales };
+  seasonPilotCache = { pilotRows: pilotRows || [], priceByType: priceInfo?.priceByType || {}, brandPrice: priceInfo?.brandPrice ?? null, priceMonth: priceInfo?.month ?? null, monthByType: priceInfo?.monthByType || {}, salesByType, totalSales };
   renderSeasonPilotTable();
 }
 function seasonPilotTierAmt(rows, tierKey) {
@@ -1047,9 +1070,14 @@ function renderSeasonPilotTable() {
   if (!tbl || !data) return;
   const priceHint = $('#seasonPilotPriceHint');
   if (priceHint) {
-    const fmtP = p => p != null ? fmtNum(p, 0) + '원' : '—';
+    // 매장형태별로 기준 달이 다를 수 있어서(예: 이번 달 초라 일부만 입력됨), 그 형태 자신의 달을 같이 표시한다.
+    const fmtP = key => {
+      const p = data.priceByType[key], m = data.monthByType?.[key];
+      if (p == null) return '—';
+      return m && m !== data.priceMonth ? `${fmtNum(p, 0)}원(${m})` : `${fmtNum(p, 0)}원`;
+    };
     priceHint.textContent = data.priceMonth
-      ? `기준 객단가(${data.priceMonth} 실측, VAT 제외): 프리미엄 ${fmtP(data.priceByType.premium)} · 일반 ${fmtP(data.priceByType.regular)} · 199-229 ${fmtP(data.priceByType.value)}`
+      ? `기준 객단가(VAT 제외, 매장형태별 최근 실측월 기준): 프리미엄 ${fmtP('premium')} · 일반 ${fmtP('regular')} · 199-229 ${fmtP('value')}`
       : '기준 객단가를 계산할 매출 데이터가 없습니다.';
   }
   if (!data.pilotRows.length) {
