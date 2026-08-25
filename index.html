@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>로운 원가설계판</title>
-<link rel="stylesheet" href="style.css?v=202608211630">
+<link rel="stylesheet" href="style.css?v=202608211800">
 </head>
 <body>
 
@@ -303,7 +303,10 @@
       <div class="card">
         <div class="card-head">
           <h3>예상 원가율</h3>
-          <span class="hint">브랜드 값은 현재 시즌 실제 매장별 매출 비중으로 가중평균합니다 · 존/메뉴 행 클릭=접기/펼치기</span>
+          <div class="card-head-actions">
+            <button id="seasonPilotUndoBtn" class="btn btn-ghost btn-sm" type="button" disabled>↶ 뒤로가기</button>
+            <span class="hint">브랜드 값은 현재 시즌 실제 매장별 매출 비중으로 가중평균합니다 · 존/메뉴 행 클릭=접기/펼치기</span>
+          </div>
         </div>
         <div id="seasonPilotPriceHint" class="hint" style="margin-bottom:6px"></div>
         <div class="pivot-wrap"><table class="pivot-table" id="seasonPilotTable">
@@ -673,6 +676,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608211730"></script>
+<script src="app.js?v=202608211800"></script>
 </body>
 </html>

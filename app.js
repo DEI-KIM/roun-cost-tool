@@ -955,6 +955,9 @@ $('#saveSeasonPilotBtn').addEventListener('click', async () => {
 
 let seasonPilotCache = null;
 let seasonPilotCollapsed = {};
+// 결과표에서 g당원가/인당소비량을 바로 고칠 때, 고치기 전 값을 여기 쌓아뒀다가 "뒤로가기"로
+// 한 단계씩 되돌린다(누를 때마다 DB에도 그 이전 값을 다시 저장).
+let seasonPilotUndoStack = [];
 const SEASON_PILOT_TIERS = [
   { key: 'premium', label: '프리미엄', consumptionField: 'consumption_per_person_premium' },
   { key: 'regular', label: '일반', consumptionField: 'consumption_per_person_regular' },
@@ -1020,12 +1023,14 @@ async function loadSeasonPilotView() {
   if (!seasonId) { tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">시즌을 선택해주세요.</td></tr></tbody>'; return; }
   tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">불러오는 중...</td></tr></tbody>';
 
-  const [{ data: pilotRows, error }, priceInfo, salesRes] = await Promise.all([
+  const [{ data: pilotRows, error }, priceInfo, salesRes, { data: categorySummary }, targetPrice] = await Promise.all([
     sb.from('season_pilot_menu').select('*').eq('season_id', seasonId),
     getRecentMonthPriceByType(),
     (season?.start_month && season?.end_month)
       ? fetchAllRows('store_sales', q => q.gte('sales_date', season.start_month).lt('sales_date', nextDay(season.end_month)), 'store_code, store_name, sales_total')
       : Promise.resolve({ data: [] }),
+    sb.from('category_summary').select('category, target_cost_per_gram, target_consumption_per_person').eq('season_id', seasonId),
+    getTargetPrice(seasonId),
   ]);
   if (error) { tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--crit)">${esc(error.message)}</td></tr></tbody>`; return; }
 
@@ -1039,7 +1044,17 @@ async function loadSeasonPilotView() {
   });
   const totalSales = salesByType.premium + salesByType.regular + salesByType.value;
 
-  seasonPilotCache = { pilotRows: pilotRows || [], priceByType: priceInfo?.priceByType || {}, brandPrice: priceInfo?.brandPrice ?? null, priceMonth: priceInfo?.month ?? null, monthByType: priceInfo?.monthByType || {}, salesByType, totalSales };
+  // "목표" 열 — "시즌설계 › 목표원가"에 입력해둔 조닝별 목표 원가율(category_summary)을 그대로 가져와
+  // 보여준다. 매장형태별로는 목표를 따로 안 두므로(시즌 하나에 목표는 하나) 이 열은 항상 단일 값.
+  const targetByCategory = new Map();
+  (categorySummary || []).forEach(r => { if (r.category) targetByCategory.set(r.category, r); });
+
+  seasonPilotCache = {
+    pilotRows: pilotRows || [], priceByType: priceInfo?.priceByType || {}, brandPrice: priceInfo?.brandPrice ?? null,
+    priceMonth: priceInfo?.month ?? null, monthByType: priceInfo?.monthByType || {}, salesByType, totalSales,
+    targetByCategory, targetPrice,
+  };
+  seasonPilotUndoStack = [];
   renderSeasonPilotTable();
 }
 function seasonPilotTierAmt(rows, tierKey) {
@@ -1080,6 +1095,8 @@ function renderSeasonPilotTable() {
       ? `기준 객단가(VAT 제외, 매장형태별 최근 실측월 기준): 프리미엄 ${fmtP('premium')} · 일반 ${fmtP('regular')} · 199-229 ${fmtP('value')}`
       : '기준 객단가를 계산할 매출 데이터가 없습니다.';
   }
+  const undoBtn = $('#seasonPilotUndoBtn');
+  if (undoBtn) undoBtn.disabled = seasonPilotUndoStack.length === 0;
   if (!data.pilotRows.length) {
     tbl.innerHTML = `<tbody><tr><td style="padding:24px;color:var(--muted)">입력된 메뉴가 없습니다. 위에서 메뉴를 입력하고 저장해주세요.</td></tr></tbody>`;
     return;
@@ -1088,6 +1105,12 @@ function renderSeasonPilotTable() {
   const byZone = {};
   data.pilotRows.forEach(r => { (byZone[r.category] = byZone[r.category] || []).push(r); });
   const zones = Object.keys(byZone).sort((a, b) => CATEGORY_ORDER.indexOf(a) - CATEGORY_ORDER.indexOf(b));
+
+  // "목표"열 — 시즌설계 › 목표원가에서 입력한 조닝별 목표 원가율(category_summary)을 그대로 보여준다.
+  // 메뉴 단위 목표는 따로 안 두므로(목표는 조닝 단위) 메뉴 행에서는 "—"로 비워둔다.
+  const targetRatioForZone = zone => computeCostRatio(data.targetByCategory.get(zone)?.target_cost_per_gram, data.targetByCategory.get(zone)?.target_consumption_per_person, data.targetPrice);
+  const brandTarget = weightedTotals([...data.targetByCategory.values()], 'target');
+  const brandTargetRatio = computeCostRatio(brandTarget.costPerGram, brandTarget.consumption, data.targetPrice);
 
   // 존/전체 합계 행은 여러 메뉴를 묶은 값이라 직접 수정할 대상이 없다 — 숫자만 보여준다.
   const tierCells = rows => SEASON_PILOT_TIERS.map(t => `<td>${fmtR(seasonPilotTierRatio(rows, t.key, data.priceByType))}</td>`).join('');
@@ -1098,19 +1121,19 @@ function renderSeasonPilotTable() {
     return `<td><input class="pilot-inline-in" type="number" step="any" value="${val ?? ''}" placeholder="g" data-menu="${esc(r.menu_name)}" data-tier="${t.key}" onchange="seasonPilotEditConsumption(this)"> <span class="pivot-d">${ratio}</span></td>`;
   }).join('');
 
-  let H = '<thead><tr><th>존 / 메뉴</th><th>브랜드</th><th>프리미엄</th><th>일반</th><th>199-229</th></tr></thead><tbody>';
-  H += `<tr class="pivot-zone pivot-met"><td>【전체】</td><td>${fmtR(seasonPilotBrandRatio(data.pilotRows, data))}</td>${tierCells(data.pilotRows)}</tr>`;
+  let H = '<thead><tr><th>존 / 메뉴</th><th>목표</th><th>브랜드</th><th>프리미엄</th><th>일반</th><th>199-229</th></tr></thead><tbody>';
+  H += `<tr class="pivot-zone pivot-met"><td>【전체】</td><td>${fmtR(brandTargetRatio)}</td><td>${fmtR(seasonPilotBrandRatio(data.pilotRows, data))}</td>${tierCells(data.pilotRows)}</tr>`;
 
   zones.forEach(zone => {
     const rows = byZone[zone];
     const zid = 'pilot|' + zone;
-    H += `<tr class="pivot-zone" onclick="seasonPilotToggle('${esc(zid)}')"><td>${seasonPilotCollapsed[zid] ? '▸' : '▾'} 【${esc(zone)}】</td><td>${fmtR(seasonPilotBrandRatio(rows, data))}</td>${tierCells(rows)}</tr>`;
+    H += `<tr class="pivot-zone" onclick="seasonPilotToggle('${esc(zid)}')"><td>${seasonPilotCollapsed[zid] ? '▸' : '▾'} 【${esc(zone)}】</td><td>${fmtR(targetRatioForZone(zone))}</td><td>${fmtR(seasonPilotBrandRatio(rows, data))}</td>${tierCells(rows)}</tr>`;
     if (seasonPilotCollapsed[zid]) return;
     rows.slice().sort((a, b) => (seasonPilotBrandRatio([b], data) || 0) - (seasonPilotBrandRatio([a], data) || 0))
       .forEach(r => {
         H += `<tr class="pivot-menu"><td title="${esc(r.menu_name)}">　${esc(r.menu_name)} ` +
           `<input class="pilot-inline-in" type="number" step="any" value="${r.cost_per_gram ?? ''}" placeholder="g당원가" data-menu="${esc(r.menu_name)}" onchange="seasonPilotEditCost(this)"></td>` +
-          `<td>${fmtR(seasonPilotBrandRatio([r], data))}</td>${tierCellsEditable(r)}</tr>`;
+          `<td class="pivot-na">—</td><td>${fmtR(seasonPilotBrandRatio([r], data))}</td>${tierCellsEditable(r)}</tr>`;
       });
   });
   H += '</tbody>';
@@ -1122,6 +1145,7 @@ function seasonPilotToggle(zoneId) { seasonPilotCollapsed[zoneId] = !seasonPilot
 function seasonPilotEditCost(el) {
   const row = seasonPilotCache?.pilotRows.find(r => r.menu_name === el.dataset.menu);
   if (!row) return;
+  seasonPilotUndoStack.push({ rowId: row.id, field: 'cost_per_gram', prevValue: row.cost_per_gram });
   row.cost_per_gram = numOrNull(el.value);
   renderSeasonPilotTable();
   seasonPilotSaveField(row.id, 'cost_per_gram', row.cost_per_gram);
@@ -1130,6 +1154,7 @@ function seasonPilotEditConsumption(el) {
   const row = seasonPilotCache?.pilotRows.find(r => r.menu_name === el.dataset.menu);
   const tier = SEASON_PILOT_TIERS.find(t => t.key === el.dataset.tier);
   if (!row || !tier) return;
+  seasonPilotUndoStack.push({ rowId: row.id, field: tier.consumptionField, prevValue: row[tier.consumptionField] });
   row[tier.consumptionField] = numOrNull(el.value);
   renderSeasonPilotTable();
   seasonPilotSaveField(row.id, tier.consumptionField, row[tier.consumptionField]);
@@ -1138,6 +1163,18 @@ async function seasonPilotSaveField(rowId, field, value) {
   const { error } = await sb.from('season_pilot_menu').update({ [field]: value }).eq('id', rowId);
   if (error) console.error('시즌 파일럿 결과표 수정 저장 실패:', error);
 }
+// "뒤로가기" — 누를 때마다 스택에서 바로 직전 수정 한 건씩 꺼내 되돌린다(여러 번 누르면 그만큼 더 과거로).
+function seasonPilotUndo() {
+  const entry = seasonPilotUndoStack.pop();
+  if (!entry) return;
+  const row = seasonPilotCache?.pilotRows.find(r => r.id === entry.rowId);
+  if (row) {
+    row[entry.field] = entry.prevValue;
+    seasonPilotSaveField(row.id, entry.field, entry.prevValue);
+  }
+  renderSeasonPilotTable();
+}
+$('#seasonPilotUndoBtn')?.addEventListener('click', seasonPilotUndo);
 
 async function rebuildCategoryDesignRollup(seasonId) {
   const { data: menus, error } = await sb.from('menu_designs').select('*').eq('season_id', seasonId);

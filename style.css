@@ -257,6 +257,8 @@ table { font-variant-numeric: tabular-nums; }
 #dashboardTable thead tr:nth-child(2) th:first-child { text-align: right; width: auto; }
 #dashboardTable th:not(:first-child), #dashboardTable td:not(:first-child) { text-align: center; }
 #dashboardTable input { text-align: center; }
+#targetCostTable th:not(:first-child), #targetCostTable td:not(:first-child) { text-align: center; }
+#targetCostTable input { text-align: center; }
 .data-table.wide-first th:first-child, .data-table.wide-first td:first-child { width: 22%; }
 /* 시즌(1열)은 좁고 메뉴명(3열)은 넓어야 해서, colgroup으로 지정한 폭을 이 표에서만 그대로 쓰게 함 */
 #menuConsumptionViewTable th:first-child, #menuConsumptionViewTable td:first-child { width: 10%; }
