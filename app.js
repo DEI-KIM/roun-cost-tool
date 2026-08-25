@@ -1047,7 +1047,10 @@ async function loadSeasonPilotView() {
   // "목표" 열 — "시즌설계 › 목표원가"에 입력해둔 조닝별 목표 원가율(category_summary)을 그대로 가져와
   // 보여준다. 매장형태별로는 목표를 따로 안 두므로(시즌 하나에 목표는 하나) 이 열은 항상 단일 값.
   const targetByCategory = new Map();
-  (categorySummary || []).forEach(r => { if (r.category) targetByCategory.set(r.category, r); });
+  // 통합조닝 시절의 낡은 category_summary 행("월남쌈/죽", "음료/디저트" 등)이 남아있을 수 있어,
+  // 대시보드/목표원가 탭과 똑같이 현재 조닝 목록(DASHBOARD_CATEGORIES)만 골라 쓴다 — 안 그러면
+  // 옛날 통합 행과 새 분리 행이 같이 합산돼 브랜드 목표가 실제보다 높게 잡힌다.
+  (categorySummary || []).forEach(r => { if (r.category && DASHBOARD_CATEGORIES.includes(r.category)) targetByCategory.set(r.category, r); });
 
   seasonPilotCache = {
     pilotRows: pilotRows || [], priceByType: priceInfo?.priceByType || {}, brandPrice: priceInfo?.brandPrice ?? null,
