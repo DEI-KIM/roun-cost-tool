@@ -1736,10 +1736,13 @@ function getActualCostPerGram(seasonId) {
 // 레시피를 고쳐도 ①②③ 탭이 예전 계산값을 계속 보여주는 문제가 생긴다(실제로 겪음 — 자재 별칭
 // 확정 후 "메뉴별 소비액"엔 반영됐는데 피벗 탭만 그대로였음). 종료 시즌 결과는 캐시일 뿐이라
 // 지워도 다음 조회 때 다시 계산해서 채워지므로 안전하다.
+// Promise를 반환하도록 해서, "피벗 최신화" 버튼처럼 삭제가 끝난 뒤에 바로 재계산을 이어가야 하는
+// 곳에서는 await로 순서를 보장하고, 기존 호출부(레시피/별칭 저장 후)처럼 굳이 안 기다려도 되는
+// 곳은 그냥 호출만 해도 되게 한다.
 function invalidateSeasonCalcCaches() {
   flatCache.clear();
   costCache.clear();
-  sb.from('pivot_snapshot').delete().gt('id', 0).then(({ error }) => { if (error) console.error('pivot_snapshot 캐시 삭제 실패:', error); });
+  return sb.from('pivot_snapshot').delete().gt('id', 0).then(({ error }) => { if (error) console.error('pivot_snapshot 캐시 삭제 실패:', error); });
 }
 
 // ---- 자재명 유사도 (브랜드/공급처가 바뀌어 자재코드가 달라진 경우를 후보로 찾기 위함) ----
@@ -4085,6 +4088,26 @@ $('#pivotResetOrderBtn').addEventListener('click', () => {
   localStorage.removeItem('pivotStoreOrder');
   renderPivotCompare();
 });
+
+// "메뉴별 소비액"에서 레시피/자재를 고쳐도 종료 시즌 피벗은 저장된 캐시(pivot_snapshot)를 계속 보여주고,
+// 진행 중 시즌도 세션 내 캐시(flatCache/costCache) 때문에 최대 2분은 예전 값을 보여줄 수 있다 —
+// 매번 콘솔로 캐시를 지우지 않아도, 버튼 하나로 지금 보고 있는 탭을 강제로 다시 계산하게 한다.
+async function refreshPivotFromLatest(ev) {
+  const btn = ev.currentTarget;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '최신화 중...';
+  try {
+    await invalidateSeasonCalcCaches();
+    if (pivotTab === 'A' || pivotTab === 'B') await loadPivotCompareView();
+    else if (pivotTab === 'C') await loadPivotTimeSeriesView();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+$('#pivotRefreshBtnAB')?.addEventListener('click', refreshPivotFromLatest);
+$('#pivotRefreshBtnC')?.addEventListener('click', refreshPivotFromLatest);
 
 async function loadPivotCompareView() {
   const myToken = ++pivotLoadToken;

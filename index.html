@@ -141,6 +141,7 @@
         </select>
         <span id="pivotStoreSelectBox"><label>매장 열:</label><select id="pivotStoreSelect"></select></span>
         <button id="pivotResetOrderBtn" class="pivot-btn" type="button" style="display:none">매장 순서 초기화</button>
+        <button id="pivotRefreshBtnAB" class="pivot-btn" type="button" title="메뉴별 소비액에서 새로 계산한 값을 이 표에 다시 반영합니다">↻ 피벗 최신화</button>
         <span class="pivot-note" id="pivotNoteAB">셀: 그램/금액 모드에선 괄호 안에 다른 단위도 같이 표시 · 존/메뉴 행 클릭=접기/펼치기 <span class="pivot-d" id="pivotCacheHint"></span></span>
       </div>
       <div class="pivot-ctl" id="pivotCtlC" style="display:none">
@@ -148,6 +149,7 @@
         <label>단위:</label><select id="pivotTsUnitSelect"><option value="m">월별</option><option value="w">주차별</option><option value="s">시즌별</option></select>
         <label>시작:</label><select id="pivotTsFromSelect"></select>
         <label>값:</label><select id="pivotTsModeSelect"><option value="pg">인당소비액</option><option value="g">인당소비량</option><option value="pp">원가율</option></select>
+        <button id="pivotRefreshBtnC" class="pivot-btn" type="button" title="메뉴별 소비액에서 새로 계산한 값을 이 표에 다시 반영합니다">↻ 피벗 최신화</button>
       </div>
       <div class="pivot-ctl" id="pivotCtlD" style="display:none">
         <span class="pivot-note">대상: 메뉴 진단 "즉시" 긴급도 메뉴 · TO-BE 칸을 수정하면 Δ원/객·Δ%p가 바로 재계산됩니다.</span>
@@ -676,6 +678,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202608211900"></script>
+<script src="app.js?v=202608211930"></script>
 </body>
 </html>
