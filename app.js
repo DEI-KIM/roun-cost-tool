@@ -1475,15 +1475,23 @@ function buildSmoothPath(points) {
 let menuConsumptionRowsCache = [];
 async function loadMenuConsumptionView() {
   if (!state.currentSeasonId) return;
-  const [{ data: designs, error: designErr }, { data: consumption, error: consErr }] = await Promise.all([
+  const [{ data: designs, error: designErr }, { data: consumption, error: consErr }, { data: recipeMenus }] = await Promise.all([
     fetchAllRows('menu_designs', q => q.eq('season_id', state.currentSeasonId).order('created_at', { ascending: true })),
     fetchAllRows('menu_consumption', q => q.eq('season_id', state.currentSeasonId)),
+    fetchAllRows('recipe_items', q => q.eq('season_id', state.currentSeasonId), 'menu_name, category'),
   ]);
   if (designErr || consErr) { console.error(designErr || consErr); return; }
 
   // 같은 메뉴명이 여러 번 저장됐으면 가장 최근 값을 그 메뉴의 현재 설계원가로 사용
   const byMenu = new Map();
   (designs || []).forEach(m => { if (m.menu_name) byMenu.set(m.menu_name, m); });
+  // 레시피(recipe_items)는 있는데 목표원가에 아직 등록 안 된 메뉴는(설계 단계를 건너뛰고 바로 레시피부터
+  // 등록한 경우) 여기서 통째로 빠지는 문제가 있었다 — 실제 원가/소비량이 계산되는데도 이 표에 안 보여서
+  // 대시보드 합계에서도 조용히 누락됐음. 최소한 이름·조닝만이라도 채워서(설계원가는 비워둠) 빠지지 않게 한다.
+  (recipeMenus || []).forEach(r => {
+    if (!r.menu_name || r.menu_name.startsWith('#') || byMenu.has(r.menu_name)) return;
+    byMenu.set(r.menu_name, { menu_name: r.menu_name, category: r.category, cost_per_gram: null });
+  });
   const consumptionByMenu = Object.fromEntries((consumption || []).map(c => [c.menu_name, c]));
   const seasonName = state.seasons.find(s => s.id === state.currentSeasonId)?.name ?? '-';
 
@@ -2455,25 +2463,38 @@ async function computeActualCostPerGram(seasonId) {
 // 다르므로, 합산 전용으로는 시즌 전체 손님 수로 나눈 consumption_per_person_brand를 써야 한다
 // (그냥 consumption_per_person을 더하면 주말·디너 한정 메뉴가 과대 반영되어 브랜드 실적이 부풀려진다).
 async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, totalSales, totalCustomers, consumptionResults) {
-  const [{ data: designs }, { data: consumption }] = await Promise.all([
+  const [{ data: designs }, { data: consumption }, { data: recipeMenus }] = await Promise.all([
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     fetchAllRows('menu_consumption', q => q.eq('season_id', seasonId)),
+    fetchAllRows('recipe_items', q => q.eq('season_id', seasonId), 'menu_name, category'),
   ]);
   const consumptionByMenu = Object.fromEntries((consumption || []).map(c => [c.menu_name, c]));
   const brandByMenu = Object.fromEntries((consumptionResults || []).map(r => [r.menu_name, r]));
+  const designByMenu = new Map();
+  (designs || []).forEach(m => { if (m.menu_name) designByMenu.set(m.menu_name, m); });
+  // 레시피(recipe_items)만 있고 목표원가(menu_designs) 등록이 아직 없는 메뉴는(설계 단계를 건너뛰고
+  // 바로 레시피부터 등록한 경우) 이 합산에서 통째로 빠지는 문제가 있었다 — 실제로 계산되는 원가인데도
+  // 대시보드 브랜드 실적에 조용히 반영이 안 됐음. 설계원가 목록에 없는 메뉴도 최소한 조닝 정보만
+  // 레시피 쪽에서 가져와 합산 대상에 포함시킨다(설계g당원가가 없을 뿐, 실제원가/소비량이 있으면 반영됨).
+  const recipeCategoryByMenu = new Map();
+  (recipeMenus || []).forEach(r => { if (r.menu_name && !r.menu_name.startsWith('#') && !recipeCategoryByMenu.has(r.menu_name)) recipeCategoryByMenu.set(r.menu_name, r.category); });
+  const allMenuNames = new Set([...designByMenu.keys(), ...recipeCategoryByMenu.keys()]);
+
   const byCat = {};
-  (designs || []).forEach(m => {
-    const c = consumptionByMenu[m.menu_name];
-    const b = brandByMenu[m.menu_name];
+  allMenuNames.forEach(menuName => {
+    const m = designByMenu.get(menuName);
+    const category = m?.category ?? recipeCategoryByMenu.get(menuName);
+    const c = consumptionByMenu[menuName];
+    const b = brandByMenu[menuName];
     // 실제 자재사용량 기준으로 재계산한 g당원가가 있으면 그걸 쓰고, 아직 계산 전인 메뉴는 설계 단가로 대체
-    const costPerGram = c?.actual_cost_per_gram ?? m.cost_per_gram;
+    const costPerGram = c?.actual_cost_per_gram ?? m?.cost_per_gram;
     // 합산용 인당소비량: 시즌 전체 손님 기준(consumption_per_person_brand)을 우선 쓰고,
     // 매장 실사용 근거가 없어 설계값으로 대체된 메뉴(design_fallback)는 그 값 그대로 둔다.
     const consumptionForRollup = b?.consumption_per_person_brand ?? c?.consumption_per_person;
     const consumptionForRollupExclWater = b?.consumption_per_person_brand_excl_water ?? c?.consumption_per_person_excl_water ?? consumptionForRollup;
-    if (!m.category || consumptionForRollup == null || costPerGram == null) return;
-    if (!byCat[m.category]) byCat[m.category] = [];
-    byCat[m.category].push({
+    if (!category || consumptionForRollup == null || costPerGram == null) return;
+    if (!byCat[category]) byCat[category] = [];
+    byCat[category].push({
       cost_per_gram: costPerGram, consumption_per_person: consumptionForRollup,
       consumption_per_person_excl_water: consumptionForRollupExclWater,
     });
