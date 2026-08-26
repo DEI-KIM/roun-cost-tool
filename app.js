@@ -3816,6 +3816,18 @@ async function savePivotSnapshotFromResults(seasonId, periodUnit, periodStart, p
   }
 }
 
+// designByMenu(menu_designs)에 없어도 recipe_items에 레시피가 등록된 메뉴는 존/합계 계산에서 빠지면 안 된다
+// ("메뉴별 소비액"과 같은 원칙 — 레시피 등록이 실제 메뉴 목록의 기준. 설계원가는 최초 계획일 뿐).
+// 안 그러면 그 메뉴의 실사용량이 피벗 총액/존 합계에서 조용히 빠져 원가율이 실제보다 낮게 나온다.
+function unionDesignByMenu(designByMenu, categoryByMenu) {
+  const out = new Map(designByMenu);
+  (categoryByMenu || new Map()).forEach((category, menu) => {
+    if (!menu || menu.startsWith('#') || out.has(menu)) return;
+    out.set(menu, { menu_name: menu, category, cost_per_gram: null });
+  });
+  return out;
+}
+
 async function loadPivotCompareData() {
   const dateRange = pivotDateRangeFromControls();
   if (!dateRange) return { error: '기간을 선택해주세요.' };
@@ -3858,8 +3870,9 @@ async function loadPivotCompareData() {
     if (closed) savePivotSnapshotFromResults(seasonId, periodUnit, dateRange.start, dateRange.end, results);
   }
 
-  const designByMenu = new Map();
-  (designsRes.data || []).forEach(d => { if (d.menu_name) designByMenu.set(d.menu_name, d); });
+  const rawDesignByMenu = new Map();
+  (designsRes.data || []).forEach(d => { if (d.menu_name) rawDesignByMenu.set(d.menu_name, d); });
+  const designByMenu = unionDesignByMenu(rawDesignByMenu, flat.categoryByMenu);
   const costByMenu = new Map((costResult.results || []).map(r => [r.menu_name, r.actual_cost_per_gram]));
   const targetByCategory = new Map();
   // 통합조닝 시절의 낡은 category_summary 행("월남쌈/죽", "음료/디저트" 등)이 남아있을 수 있어,
@@ -4233,10 +4246,13 @@ async function loadPivotTimeSeriesData() {
     const season = state.seasons.find(s => s.id === seasonId);
     if (targetCode === 'brand') {
       if (!designsBySeasonId.has(seasonId)) {
-        const { data } = await fetchAllRows('menu_designs', q => q.eq('season_id', seasonId));
+        const [{ data }, seasonFlat] = await Promise.all([
+          fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
+          getFlatForSeason(seasonId),
+        ]);
         const m = new Map();
         (data || []).forEach(d => { if (d.menu_name) m.set(d.menu_name, d); });
-        designsBySeasonId.set(seasonId, m);
+        designsBySeasonId.set(seasonId, unionDesignByMenu(m, seasonFlat?.categoryByMenu));
       }
       const designByMenu = designsBySeasonId.get(seasonId);
       const closed = isSeasonClosed(season);
