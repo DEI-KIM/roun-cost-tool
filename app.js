@@ -3948,8 +3948,13 @@ function pivotGroupValue(menuResult, storeCodes) {
     if (s.grams != null) { measuredGrams += s.grams; measuredCustomers += s.store_customers || 0; any = true; }
   });
   if (!any || measuredCustomers <= 0) return { grams: null, customers: totalCustomers };
-  const rate = measuredGrams / measuredCustomers;
-  return { grams: rate * totalCustomers, customers: totalCustomers };
+  // 예전엔 측정된 매장의 비율(rate)을 그룹 전체 손님수(totalCustomers)에 곱해 확대했는데,
+  // 이러면 "와규/부채살"처럼 매장군 안의 특정 매장 1곳에서만 파는 메뉴가(운영패턴은
+  // 매장군 단위로만 등록 가능해 "프리미엄=상시"로 되어 있어도) 매장군 전체·브랜드 전체에
+  // 그 한 매장 비율 그대로 반영되는 문제가 있었다(희석이 전혀 안 됨). 실측된 그램만 그대로
+  // 쓰면, 전체 매장에 데이터가 있는 메뉴는 결과가 똑같고(measuredCustomers===totalCustomers),
+  // 일부 매장만 있는 메뉴는 그 매장 몫만큼만 반영되어 나머지 매장/그룹 비중만큼 자연히 희석된다.
+  return { grams: measuredGrams, customers: totalCustomers };
 }
 // 인당소비량(g)/인당소비액(원) 모드에서는 브랜드 대비 %배지 대신, 같은 셀에 그램·금액을
 // "주값(부값)" 형태로 함께 보여준다 — 그램 모드에서 뜬금없이 %가 섞여 보이는 걸 없애고
