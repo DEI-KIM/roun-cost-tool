@@ -2211,7 +2211,9 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
   finalMenus.forEach(menu => {
     const p = availabilityPatternByMenu.get(menu);
     if (!p) return;
-    ['value', 'regular', 'premium'].forEach(tier => { if (p[tier] === '(없음)') unavailableMenusByTier[tier].add(menu); });
+    // 운영패턴은 "상시/디너주말/주말" 요일 구분을 없애고 O(판매)/X(미판매)로 단순화했다(2026-08-27).
+    // patternFor()는 'O'가 PATTERNS 목록에 없어 자동으로 '상시'(전체 손님) 취급으로 떨어지므로 별도 수정 불필요.
+    ['value', 'regular', 'premium'].forEach(tier => { if (p[tier] === 'X') unavailableMenusByTier[tier].add(menu); });
   });
 
   // ---- 매장별로 각각 1단계(전용자재)+2단계(IPF) 계산. 그 매장에 근거가 전혀 없는 메뉴는 "데이터없음"으로 남겨둔다 ----
