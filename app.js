@@ -1707,6 +1707,7 @@ async function flattenRecipesForSeason(seasonId) {
 const SEASON_CALC_TTL_MS = 2 * 60 * 1000;
 const flatCache = new Map(); // seasonId -> { ts, promise }
 const costCache = new Map(); // seasonId -> { ts, promise }
+const costByStoreCache = new Map(); // seasonId -> { ts, promise } — 매장별 실제 g당원가(②③ 피벗 전용)
 function seasonCacheGet(seasonId, cache) {
   const entry = cache.get(seasonId);
   if (!entry) return null;
@@ -1728,6 +1729,13 @@ function getActualCostPerGram(seasonId) {
   costCache.set(seasonId, { ts: Date.now(), promise: p });
   return p;
 }
+function getActualCostPerGramByStore(seasonId) {
+  const cached = seasonCacheGet(seasonId, costByStoreCache);
+  if (cached) return cached;
+  const p = computeActualCostPerGramByStore(seasonId);
+  costByStoreCache.set(seasonId, { ts: Date.now(), promise: p });
+  return p;
+}
 // 레시피(BOM)나 자재 별칭을 저장하면 위 캐시가 낡은 값을 들고 있게 되므로, 저장 시점에 통째로 비운다
 // (어느 시즌이 영향받는지 매번 정확히 추적하는 것보다, 전체를 비우고 다음 조회에서 다시 계산하는
 // 편이 훨씬 단순하고 안전 — 비용도 탭 하나 다시 여는 정도라 무시할만함).
@@ -1742,6 +1750,7 @@ function getActualCostPerGram(seasonId) {
 function invalidateSeasonCalcCaches() {
   flatCache.clear();
   costCache.clear();
+  costByStoreCache.clear();
   return sb.from('pivot_snapshot').delete().gt('id', 0).then(({ error }) => { if (error) console.error('pivot_snapshot 캐시 삭제 실패:', error); });
 }
 
@@ -2499,6 +2508,113 @@ async function computeActualCostPerGram(seasonId) {
   });
 
   return { results, costMonth };
+}
+
+// RPC(material_usage_totals_for_range_by_store)는 PostgREST 기본 응답 상한(1000행)에 걸릴 수 있어서
+// (자재종류수 x 매장수가 쉽게 1000을 넘음) .range()로 끝까지 페이지네이션한다.
+async function fetchAllRpcPages(fnName, args, pageSize = 1000) {
+  let all = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await sb.rpc(fnName, args).range(from, from + pageSize - 1);
+    if (error) return { data: null, error };
+    all = all.concat(data || []);
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return { data: all, error: null };
+}
+
+// buildMaterialPriceResolver의 매장별 버전. 매장마다 실제 사들이는 공급처/코드가 달라서
+// (예: 수도권은 직송 저가, 지방은 구매팀 경유 고가) 브랜드 전체 평균 단가 하나로는
+// 매장별 원가율이 부정확해진다 — ②모델별비교/③전매장처럼 매장 단위로 쪼개서 보는 화면 전용.
+// 대시보드/카테고리 롤업 등 브랜드 전체 지표는 기존 buildMaterialPriceResolver(브랜드 평균)를 그대로 쓴다.
+// 폴백(장기평균·레시피등록가) 없이, 그 매장이 그 기간에 실제로 안 산 자재는 그냥 가격 없음으로 둔다 —
+// "그 달에 안 샀다"는 메뉴가 드랍됐거나 다른 자재로 바뀌어 매칭이 필요하다는 신호이므로, 추정치로
+// 덮어써서 숨기지 않고 그대로 드러내는 쪽이 자재 매칭 문제를 찾기에 더 낫다.
+async function buildMaterialPriceResolverByStore(seasonId) {
+  const season = state.seasons.find(s => s.id === seasonId);
+  if (!season?.start_month || !season?.end_month) return { error: '시즌 기간 정보가 없습니다.' };
+  const rangeStart = season.start_month, rangeEnd = nextDay(season.end_month);
+
+  const [{ data: usageRows, error: usageErr }, aliasRes] = await Promise.all([
+    fetchAllRpcPages('material_usage_totals_for_range_by_store', { p_start: rangeStart, p_end: rangeEnd }),
+    sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
+  ]);
+  if (usageErr) return { error: usageErr.message || String(usageErr) };
+  const confirmedAliases = aliasRes.data;
+
+  const parent = new Map();
+  const find = (x) => {
+    if (!parent.has(x)) parent.set(x, x);
+    while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); }
+    return x;
+  };
+  const union = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+  (confirmedAliases || []).forEach(a => union(a.primary_material_code, a.alt_material_code));
+
+  const gramsByStoreCluster = new Map(), costByStoreCluster = new Map(); // storeCode -> Map<cluster, n>
+  (usageRows || []).forEach(r => {
+    if (!r.material_code || !r.store_code || !r.total_grams) return;
+    const grams = Number(r.total_grams) || 0;
+    if (!grams) return;
+    const key = find(r.material_code);
+    if (!gramsByStoreCluster.has(r.store_code)) { gramsByStoreCluster.set(r.store_code, new Map()); costByStoreCluster.set(r.store_code, new Map()); }
+    const g = gramsByStoreCluster.get(r.store_code), c = costByStoreCluster.get(r.store_code);
+    g.set(key, (g.get(key) || 0) + grams);
+    c.set(key, (c.get(key) || 0) + (Number(r.total_amount) || 0));
+  });
+  const pricePerGramByStore = new Map(); // storeCode -> Map<cluster, 원/g>
+  gramsByStoreCluster.forEach((gramsMap, storeCode) => {
+    const priceMap = new Map();
+    gramsMap.forEach((grams, key) => { if (grams > 0) priceMap.set(key, costByStoreCluster.get(storeCode).get(key) / grams); });
+    pricePerGramByStore.set(storeCode, priceMap);
+  });
+
+  function priceForCode(storeCode, code) {
+    const price = pricePerGramByStore.get(storeCode)?.get(find(code));
+    return price != null ? { price, isReal: true } : null;
+  }
+
+  return { priceForCode, find, storeCodes: [...pricePerGramByStore.keys()] };
+}
+
+// computeActualCostPerGram의 매장별 버전 — 메뉴x매장별 실제 g당원가.
+// 반환: Map<menu_name, Map<store_code, { actual_cost_per_gram, grounded_ratio }>>
+// 그 매장에 그 메뉴의 자재 구매 근거가 부족하면(95% 미만) 조용히 대체하지 않고 그 매장만 비워둔다.
+async function computeActualCostPerGramByStore(seasonId) {
+  const flat = await getFlatForSeason(seasonId);
+  if (!flat) return { error: '레시피 데이터를 불러오지 못했습니다.' };
+  const { flatByMenu, cookedWeightByMenu, finalMenus } = flat;
+
+  const pricing = await buildMaterialPriceResolverByStore(seasonId);
+  if (pricing.error) return pricing;
+  const { priceForCode, storeCodes } = pricing;
+
+  const byMenu = new Map();
+  finalMenus.forEach(menu => {
+    const bom = flatByMenu.get(menu);
+    const cookedWeight = cookedWeightByMenu.get(menu);
+    if (!bom?.size || !cookedWeight) return;
+    const byStore = new Map();
+    storeCodes.forEach(storeCode => {
+      let totalCost = 0, totalGrams = 0, groundedGrams = 0;
+      bom.forEach((grams, code) => {
+        const p = priceForCode(storeCode, code);
+        if (p) totalCost += grams * p.price;
+        if (WATER_CODES.includes(code)) return;
+        totalGrams += grams;
+        if (p) groundedGrams += grams;
+      });
+      const groundedRatio = totalGrams > 0 ? groundedGrams / totalGrams : 0;
+      if (totalGrams > 0 && groundedRatio >= 0.95) {
+        byStore.set(storeCode, { actual_cost_per_gram: totalCost / cookedWeight, grounded_ratio: groundedRatio });
+      }
+    });
+    if (byStore.size) byMenu.set(menu, byStore);
+  });
+
+  return { byMenu };
 }
 
 // "매장별 히트맵"·"메뉴 진단" 탭 자체를 없애면서 이 두 탭 전용 렌더 코드를 정리함 — 다른 어떤 탭도
@@ -3895,11 +4011,13 @@ async function loadPivotCompareData() {
     getFlatForSeason(seasonId),
     fetchAllRows('category_summary', q => q.eq('season_id', seasonId)),
     getTargetPrice(seasonId),
+    getActualCostPerGramByStore(seasonId),
   ];
   if (!cachedRows) basePromises.push(computeMenuConsumption(null, dateRange));
   const settled = await Promise.all(basePromises);
-  const [costResult, designsRes, salesRes, flat, categorySummaryRes, targetPrice] = settled;
+  const [costResult, designsRes, salesRes, flat, categorySummaryRes, targetPrice, costByStoreResult] = settled;
   if (costResult.error) return { error: costResult.error };
+  const costByMenuStore = costByStoreResult.error ? new Map() : costByStoreResult.byMenu;
   if (designsRes.error) return { error: designsRes.error.message || String(designsRes.error) };
   if (salesRes.error) return { error: salesRes.error.message || String(salesRes.error) };
   if (categorySummaryRes.error) return { error: categorySummaryRes.error.message || String(categorySummaryRes.error) };
@@ -3907,7 +4025,7 @@ async function loadPivotCompareData() {
   let results = null, fromCache = false;
   if (cachedRows) { results = reconstructResultsFromSnapshot(cachedRows); fromCache = true; }
   if (!results) {
-    const consumption = settled[6];
+    const consumption = settled[7];
     if (consumption.error) return { error: consumption.error };
     results = consumption.results;
     if (closed) savePivotSnapshotFromResults(seasonId, periodUnit, dateRange.start, dateRange.end, results);
@@ -3934,7 +4052,7 @@ async function loadPivotCompareData() {
   });
   const stores = [...storeAgg.values()].sort((a, b) => b.guests - a.guests);
 
-  return { dateRange, seasonId, results, designByMenu, costByMenu, stores, flat, targetByCategory, targetPrice, fromCache };
+  return { dateRange, seasonId, results, designByMenu, costByMenu, costByMenuStore, stores, flat, targetByCategory, targetPrice, fromCache };
 }
 
 // storeCodes에 속한 매장들의 실제 그램·손님수를 합산 (데이터 있는 매장만 그램에 반영, 손님수는 항상 반영).
@@ -3957,6 +4075,23 @@ function pivotGroupValue(menuResult, storeCodes) {
   // 쓰면, 전체 매장에 데이터가 있는 메뉴는 결과가 똑같고(measuredCustomers===totalCustomers),
   // 일부 매장만 있는 메뉴는 그 매장 몫만큼만 반영되어 나머지 매장/그룹 비중만큼 자연히 희석된다.
   return { grams: measuredGrams, customers: totalCustomers };
+}
+// pivotGroupValue와 같은 그룹(매장군/매장)에 대해 금액을 계산하되, 브랜드 전체 평균 단가 하나를
+// 곱하는 대신 매장마다 그 매장이 실제로 산 단가를 곱한다(수도권 직송 저가 vs 지방 구매팀 고가처럼
+// 매장별로 실제 단가가 다름 — 2026-08-27). costByStoreForMenu에 그 매장 단가가 없으면(그 기간에
+// 그 자재를 안 샀거나 다른 자재로 바뀌었다는 신호) 폴백으로 덮어쓰지 않고 그 매장 몫을 그냥 뺀다 —
+// 자재 매칭이 안 된 매장은 원가가 작게 나와서 오히려 눈에 띄어야 찾기 쉽다.
+function pivotGroupAmount(menuResult, storeCodes, costByStoreForMenu) {
+  let amt = 0, grams = 0, any = false;
+  (menuResult?.per_store || []).forEach(s => {
+    if (!storeCodes.includes(s.store_code) || s.grams == null) return;
+    const cost = costByStoreForMenu?.get(s.store_code)?.actual_cost_per_gram;
+    if (cost == null) return;
+    amt += s.grams * cost;
+    grams += s.grams;
+    any = true;
+  });
+  return { amt, grams: any ? grams : null };
 }
 // 인당소비량(g)/인당소비액(원) 모드에서는 브랜드 대비 %배지 대신, 같은 셀에 그램·금액을
 // "주값(부값)" 형태로 함께 보여준다 — 그램 모드에서 뜬금없이 %가 섞여 보이는 걸 없애고
@@ -4062,7 +4197,7 @@ function renderPivotCompare() {
       `<td class="pivot-target-col">${pivotTargetTxt(mode, brandTarget.costPerGram, brandTarget.consumption, data.targetPrice)}</td>`;
     columns.forEach(c => {
       let amt = 0, grams = 0;
-      allMenuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } });
+      allMenuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) grams += g.grams; amt += pivotGroupAmount(m.result, c.codes, data.costByMenuStore.get(m.design.menu_name)).amt; });
       const t = pivotValueTxt(mode, amt, grams, c.guests, c.netSales);
       H += `<td>${t.main}${t.secondary}</td>`;
     });
@@ -4084,7 +4219,7 @@ function renderPivotCompare() {
       // 존 합계는 메뉴마다 분모(패턴별 손님수)가 달라 그냥 더하면 안 된다 — 그램/금액만 메뉴 합산하고,
       // 손님수는 그 매장군의 전체 손님수(c.guests) 하나로 통일해서 나눈다(이번 세션 인당소비액 합산 버그와 동일 원리).
       let amt = 0, grams = 0;
-      menuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) { grams += g.grams; amt += g.grams * (m.costPerGram || 0); } });
+      menuStats.forEach(m => { if (!m.result) return; const g = pivotGroupValue(m.result, c.codes); if (g.grams != null) grams += g.grams; amt += pivotGroupAmount(m.result, c.codes, data.costByMenuStore.get(m.design.menu_name)).amt; });
       const t = pivotValueTxt(mode, amt, grams, c.guests, c.netSales);
       H += `<td>${t.main}${t.secondary}</td>`;
     });
@@ -4104,7 +4239,7 @@ function renderPivotCompare() {
       columns.forEach(c => {
         const g = pivotGroupValue(m.result, c.codes);
         if (g.grams == null) { H += '<td class="pivot-na">—</td>'; return; }
-        const amt = g.grams * (m.costPerGram || 0);
+        const amt = pivotGroupAmount(m.result, c.codes, data.costByMenuStore.get(menuName)).amt;
         const t = pivotValueTxt(mode, amt, g.grams, g.customers, c.netSales);
         H += `<td>${t.main}${t.secondary}</td>`;
       });
