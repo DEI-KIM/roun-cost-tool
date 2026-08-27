@@ -4181,7 +4181,12 @@ function renderPivotCompare() {
   // 인당소비량(g)/인당소비액(원) 모드는 같은 셀에 "주값(부값)"을 같이 보여줘 글자수가 길어지므로
   // 열 폭을 더 넓게 준다 — 좁은 채로 두면 매장이 여러 개일 때 옆 열 값과 겹쳐 보인다.
   const colWidth = (mode === 'g' || mode === 'pg') ? 122 : 92;
-  let H = '<thead><tr><th>존 / 메뉴·자재</th><th class="pivot-target-col">목표</th>';
+  // table-layout:fixed + min-width:100%인 상태에서 <th> 인라인 width만 주면, 열 폭 합이 컨테이너보다
+  // 좁을 때 브라우저가 남는 공간을 열마다 제각각 늘려버려 매장이 많을 때(③전매장) 폭이 들쭉날쭉해
+  // 보인다. <colgroup>으로 폭을 못박으면 항상 지정한 폭 그대로 고정된다.
+  let H = '<colgroup><col style="width:250px"><col style="width:62px">' +
+    columns.map(() => `<col style="width:${colWidth}px">`).join('') + '</colgroup>';
+  H += '<thead><tr><th>존 / 메뉴·자재</th><th class="pivot-target-col">목표</th>';
   columns.forEach(c => {
     const dnd = (pivotTab === 'B' && c.ord != null)
       ? ` draggable="true" ondragstart="pivotDragStore(event,${c.ord})" ondragover="event.preventDefault()" ondrop="pivotDropStore(event,${c.ord})" style="cursor:grab;width:${colWidth}px"`
