@@ -1781,8 +1781,10 @@ function materialNameSimilarity(a, b) {
       if (!cleanA || !cleanB) return;
       if (cleanA === cleanB) { best = Math.max(best, 1); return; }
       const lcsLen = longestCommonSubstringLength(cleanA, cleanB);
-      // 2글자 이하로만 겹치면 "기름/소스/육수" 같은 흔한 종류어일 뿐인 경우가 많아 제외
-      if (lcsLen < 3) return;
+      // 1글자만 겹치면 "파/기름" 등 한 글자 우연 일치일 뿐인 경우가 많아 제외.
+      // 대파/부추/두부처럼 2글자짜리 핵심 식자재명은 통과시키되, 뒤이은 0.9 유사도 기준이
+      // 버섯/고추/김치처럼 품종이 다른 경우(겹침 비율이 낮음)는 그대로 걸러준다.
+      if (lcsLen < 2) return;
       best = Math.max(best, lcsLen / Math.min(cleanA.length, cleanB.length));
     });
   });
