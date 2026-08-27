@@ -1940,10 +1940,16 @@ function ipfSolveCluster(menuNames, materialUsers, residualByMaterial, initialWe
 // 전용자재(1단계) → 공유자재 IPF배분(2단계) 순으로 추정한다. 매장 전체 실사용량을 넣으면 브랜드 계산,
 // 특정 매장 실사용량만 넣으면 그 매장만의 계산이 되는 매장 무관 공용 함수.
 // onNoEvidence(menu): 그 자재 근거로는 도저히 추정이 안 되는 메뉴에 대한 콜백 (브랜드/매장이 서로 다르게 처리하기 위해 분리)
-function estimateGramsProduced({ flatByMenu, cookedWeightByMenu, finalMenus, find, materialToMenus, clusterGramsInMenu, designByMenu }, actualByMaterial, onNoEvidence) {
+function estimateGramsProduced({ flatByMenu, cookedWeightByMenu, finalMenus, find, materialToMenus, clusterGramsInMenu, designByMenu }, actualByMaterial, onNoEvidence, unavailableMenus) {
   const gramsProducedByMenu = new Map();
   const sourceByMenu = new Map();
   const confidenceByMenu = new Map();
+
+  // unavailableMenus: 이 매장 등급(199-229/일반/프리미엄)에서 운영패턴상 아예 안 파는 메뉴 목록.
+  // 이런 메뉴는 완전히 배제하고(값 자체를 매기지 않음 — 데이터없음 처리는 그대로 유지),
+  // 그 메뉴와 자재를 공유하던 다른 메뉴는 "이 매장에선 사실상 전용자재"가 되어 정확히 계산되게 한다
+  // (예: 199매장은 닭강정을 안 팔아서, 공유자재인 치킨이 그 매장에선 후라이드순살치킨 전용이 됨).
+  const activeMenus = unavailableMenus && unavailableMenus.size ? finalMenus.filter(m => !unavailableMenus.has(m)) : finalMenus;
 
   // ---- 1단계: 전용자재 메뉴 ----
   // 전용자재가 여러 개면 레시피상 자재사용량(gramsPerBatch) 크기로 가중평균한다(=cookedWeight*ΣU/ΣgramsPerBatch).
@@ -1951,11 +1957,16 @@ function estimateGramsProduced({ flatByMenu, cookedWeightByMenu, finalMenus, fin
   // 극도로 민감)가 220g짜리 주자재 추정치와 동일한 발언권을 가져 전체가 크게 왜곡됐다
   // (예: 도지마롤 — 데코화이트 0.3g 때문에 인당소비량이 2.7g이 아니라 38g으로 잡혔던 사례).
   const unknownMenus = [];
-  finalMenus.forEach(menu => {
+  activeMenus.forEach(menu => {
     const flatBOM = flatByMenu.get(menu);
     const cookedWeight = cookedWeightByMenu.get(menu);
     if (!flatBOM.size || !cookedWeight) { unknownMenus.push(menu); return; }
-    const exclusiveKeys = [...new Set([...flatBOM.keys()].map(find))].filter(key => materialToMenus.get(key)?.size === 1);
+    const exclusiveKeys = [...new Set([...flatBOM.keys()].map(find))].filter(key => {
+      const users = materialToMenus.get(key);
+      if (!users) return false;
+      const activeUserCount = unavailableMenus && unavailableMenus.size ? [...users].filter(u => !unavailableMenus.has(u)).length : users.size;
+      return activeUserCount === 1;
+    });
     let sumU = 0, sumGramsPerBatch = 0;
     exclusiveKeys.forEach(key => {
       const U = actualByMaterial.get(key);
@@ -2193,6 +2204,16 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
   });
   const storeCodes = [...storeMap.keys()];
 
+  // 매장 등급(199-229/일반/프리미엄)별로 운영패턴이 "(없음)"인 메뉴 목록 — 그 등급에선 아예 안 파는 메뉴.
+  // IPF에 넘겨서 그 메뉴를 배제하면, 같이 자재를 쓰던 다른 메뉴가 그 등급에서는 사실상 전용자재가 되어
+  // 억지 반반배분 대신 정확한 값을 얻는다 (예: 199매장의 닭강정↔후라이드순살치킨 공유 치킨).
+  const unavailableMenusByTier = { value: new Set(), regular: new Set(), premium: new Set() };
+  finalMenus.forEach(menu => {
+    const p = availabilityPatternByMenu.get(menu);
+    if (!p) return;
+    ['value', 'regular', 'premium'].forEach(tier => { if (p[tier] === '(없음)') unavailableMenusByTier[tier].add(menu); });
+  });
+
   // ---- 매장별로 각각 1단계(전용자재)+2단계(IPF) 계산. 그 매장에 근거가 전혀 없는 메뉴는 "데이터없음"으로 남겨둔다 ----
   // 매장 수만큼 IPF를 반복 계산하느라 시간이 걸려서, 매장 사이마다 한 틱씩 양보해 브라우저가 멈춘 것처럼 보이지 않게 하고
   // 진행 상황을 onProgress로 알려준다.
@@ -2203,7 +2224,8 @@ async function computeMenuConsumption(onProgress, dateRange, brandOnly) {
       if (onProgress) onProgress(i + 1, storeCodes.length, storeMap.get(storeCode));
       await new Promise(r => setTimeout(r, 0));
       const actualByMaterial = buildActualByMaterial(usageByStore.get(storeCode) || []);
-      const { gramsProducedByMenu, sourceByMenu, confidenceByMenu } = estimateGramsProduced(recipeCtx, actualByMaterial, () => {});
+      const tier = storeType(storeCode, storeMap.get(storeCode));
+      const { gramsProducedByMenu, sourceByMenu, confidenceByMenu } = estimateGramsProduced(recipeCtx, actualByMaterial, () => {}, unavailableMenusByTier[tier]);
       perStore.push({
         store_code: storeCode, store_name: storeMap.get(storeCode), store_type: storeType(storeCode, storeMap.get(storeCode)),
         customersByPattern: customersByStorePattern.get(storeCode) || emptyPatternBucket(),
