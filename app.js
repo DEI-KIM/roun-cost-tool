@@ -4156,7 +4156,15 @@ function renderPivotCompare() {
     ];
     if (selStore) columns.push({ key: 'store', label: pivotShortName(selStore.name), codes: [selCode] });
   } else {
-    if (!pivotStoreOrder) pivotStoreOrder = (JSON.parse(localStorage.getItem('pivotStoreOrder') || 'null') || []).filter(c => allCodes.includes(c));
+    if (!pivotStoreOrder) {
+      const saved = JSON.parse(localStorage.getItem('pivotStoreOrder') || 'null');
+      // 저장된(드래그로 직접 조정한) 순서가 없으면, 손님수 순서 그대로는 등급이 뒤섞여 보이므로
+      // 기본값은 등급(프리미엄→일반→199-229)으로 먼저 묶고 그 안에서 손님수 순으로 정렬한다.
+      const PIVOT_TIER_RANK = { premium: 0, regular: 1, value: 2 };
+      pivotStoreOrder = saved
+        ? saved.filter(c => allCodes.includes(c))
+        : [...data.stores].sort((a, b) => (PIVOT_TIER_RANK[a.type] ?? 3) - (PIVOT_TIER_RANK[b.type] ?? 3) || b.guests - a.guests).map(s => s.code);
+    }
     data.stores.forEach(s => { if (!pivotStoreOrder.includes(s.code)) pivotStoreOrder.push(s.code); });
     pivotStoreOrder = pivotStoreOrder.filter(c => allCodes.includes(c));
     columns = [{ key: 'brand', label: '브랜드', codes: allCodes, brand: true }]
@@ -4218,10 +4226,12 @@ function renderPivotCompare() {
       : ` style="width:${colWidth}px"`;
     // 브랜드/매장군처럼 여러 매장을 묶은 열은 "개점" 수가 의미 있어 그대로 두고, ③전매장의 개별
     // 매장 열(위에 등급 라벨이 이미 붙음)은 매장당 항상 1개점이라 굳이 안 보여줘도 되므로 뺀다.
+    // 손님수·객단가를 한 줄로 합치면 좁은 열 폭에서 줄바꿈이 지저분해 보여, 개별 매장 열은 두 줄로
+    // 나누고 글자도 한 단계 작게 줄인다.
     const statLine = c.tier
-      ? `${(c.guests / 1000).toFixed(1)}천명 · ${fmtNum(c.perCustomer, 0)}원`
-      : `${c.count}개점 · ${(c.guests / 1000).toFixed(1)}천명 · ${fmtNum(c.perCustomer, 0)}원`;
-    H += `<th${dnd}>${esc(c.label)}<br><span class="pivot-d">${statLine}</span></th>`;
+      ? `<span class="pivot-th-stat">${(c.guests / 1000).toFixed(1)}천명</span><br><span class="pivot-th-stat">${fmtNum(c.perCustomer, 0)}원</span>`
+      : `<span class="pivot-d">${c.count}개점 · ${(c.guests / 1000).toFixed(1)}천명 · ${fmtNum(c.perCustomer, 0)}원</span>`;
+    H += `<th${dnd}>${esc(c.label)}<br>${statLine}</th>`;
   });
   H += '</tr></thead><tbody>';
 
