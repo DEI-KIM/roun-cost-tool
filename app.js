@@ -1756,20 +1756,32 @@ function cleanMaterialName(s, keepParenContent) {
   t = t.replace(/-[가-힣A-Za-z0-9]*TC\b/gi, ' '); // 끝에 붙는 "-공급업체TC" 코드 제거
   return t.replace(/[\s()\[\]{}\-_,./:]/g, '');
 }
-function longestCommonSubstringLength(a, b) {
-  let maxLen = 0;
+function longestCommonSubstring(a, b) {
+  let maxLen = 0, endA = 0;
   let prevRow = new Array(b.length + 1).fill(0);
   for (let i = 1; i <= a.length; i++) {
     const curRow = new Array(b.length + 1).fill(0);
     for (let j = 1; j <= b.length; j++) {
       if (a[i - 1] === b[j - 1]) {
         curRow[j] = prevRow[j - 1] + 1;
-        if (curRow[j] > maxLen) maxLen = curRow[j];
+        if (curRow[j] > maxLen) { maxLen = curRow[j]; endA = i; }
       }
     }
     prevRow = curRow;
   }
-  return maxLen;
+  return { len: maxLen, startA: endA - maxLen };
+}
+function longestCommonSubstringLength(a, b) {
+  return longestCommonSubstring(a, b).len;
+}
+// 대파/부추/두부처럼 2글자짜리 핵심 식자재명은 후보로 살리되, "감자+전분", "가지+소스",
+// "자몽+에이드베이스", "배추+김치"처럼 원자재명 뒤에 가공 표시어가 붙어 전혀 다른 가공품이 된
+// 경우는 걸러내기 위한 목록 (자재 매칭 후보는 사용자가 한 번 더 확인하고 확정하는 화면이라,
+// 여기서 다 걸러내지 못해도 최종 확인 단계에서 걸러진다)
+const PROCESSED_NAME_MARKERS = ['소스', '전분', '에이드', '베이스', '김치', '잼', '시럽', '드레싱', '즙', '액상', '분말', '농축액', '과자', '치즈', '요거트', '아이스크림'];
+function hasProcessedMarkerInRemainder(clean, matchStart, matchLen) {
+  const remainder = clean.slice(0, matchStart) + clean.slice(matchStart + matchLen);
+  return PROCESSED_NAME_MARKERS.some(m => remainder.includes(m));
 }
 function materialNameSimilarity(a, b) {
   if (!a || !b) return 0;
@@ -1780,9 +1792,16 @@ function materialNameSimilarity(a, b) {
     variantsB.forEach(cleanB => {
       if (!cleanA || !cleanB) return;
       if (cleanA === cleanB) { best = Math.max(best, 1); return; }
-      const lcsLen = longestCommonSubstringLength(cleanA, cleanB);
-      // 2글자 이하로만 겹치면 "기름/소스/육수" 같은 흔한 종류어일 뿐인 경우가 많아 제외
-      if (lcsLen < 3) return;
+      const { len: lcsLen, startA } = longestCommonSubstring(cleanA, cleanB);
+      // 1글자만 겹치는 건 우연의 일치일 뿐이라 제외
+      if (lcsLen < 2) return;
+      if (lcsLen === 2) {
+        // 2글자 매칭은 "기름/소스/육수" 같은 흔한 종류어 우연 일치일 위험이 커서,
+        // 매칭 안 된 나머지 부분에 가공 표시어가 있으면 다른 가공품으로 보고 제외
+        if (hasProcessedMarkerInRemainder(cleanA, startA, lcsLen)) return;
+        const posB = cleanB.indexOf(cleanA.slice(startA, startA + lcsLen));
+        if (posB >= 0 && hasProcessedMarkerInRemainder(cleanB, posB, lcsLen)) return;
+      }
       best = Math.max(best, lcsLen / Math.min(cleanA.length, cleanB.length));
     });
   });
