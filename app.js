@@ -3903,6 +3903,15 @@ $('#pivotSeasonSelect').addEventListener('change', loadPivotCompareView);
 // 매장군: storeType()의 value/regular/premium을 그대로 재사용.
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
 function pivotShortName(n) { return (n || '').replace('로운샤브 프리미엄 ', '[프] ').replace('로운 ', ''); }
+// ③전매장처럼 매장이 다닥다닥 나열될 때, 등급(프리미엄/일반/199-229) 라벨을 열 위에 따로 붙여주므로
+// 매장명 자체에서는 브랜드/체인 접두어를 다 떼고 "OO점"만 남긴다.
+const PIVOT_CHAIN_PREFIXES = ['로운샤브 프리미엄 ', '로운 ', 'NC ', '뉴코아 ', '이마트 ', '롯데몰 ', '롯데백화점 ', '스타필드마켓 '];
+function pivotVeryShortName(n) {
+  let s = n || '';
+  PIVOT_CHAIN_PREFIXES.forEach(p => { s = s.replace(p, ''); });
+  return s;
+}
+const PIVOT_TIER_LABEL = { premium: '프리미엄', regular: '일반', value: '199-229' };
 function pivotDateRangeFromControls() {
   const unit = $('#pivotUnitSelect').value;
   if (unit === 's') {
@@ -4153,7 +4162,7 @@ function renderPivotCompare() {
     columns = [{ key: 'brand', label: '브랜드', codes: allCodes, brand: true }]
       .concat(pivotStoreOrder.map((c, i) => {
         const s = data.stores.find(x => x.code === c);
-        return { key: c, label: pivotShortName(s.name), codes: [c], ord: i };
+        return { key: c, label: pivotVeryShortName(s.name), codes: [c], ord: i, tier: s.type };
       }));
   }
   columns.forEach(c => {
@@ -4186,12 +4195,33 @@ function renderPivotCompare() {
   // 보인다. <colgroup>으로 폭을 못박으면 항상 지정한 폭 그대로 고정된다.
   let H = '<colgroup><col style="width:250px"><col style="width:62px">' +
     columns.map(() => `<col style="width:${colWidth}px">`).join('') + '</colgroup>';
-  H += '<thead><tr><th>존 / 메뉴·자재</th><th class="pivot-target-col">목표</th>';
+  H += '<thead>';
+  // ③전매장은 매장이 다닥다닥 나열되어 있어 등급을 매번 눈으로 구분하기 어려우므로, 연속된
+  // 같은 등급 매장을 colspan으로 묶어 "프리미엄/일반/199-229" 그룹 라벨을 한 줄 더 얹는다.
+  if (pivotTab === 'B') {
+    H += '<tr class="pivot-tier-row"><th></th><th class="pivot-target-col"></th>';
+    let i = 0;
+    while (i < columns.length) {
+      const tier = columns[i].tier;
+      if (!tier) { H += '<th></th>'; i++; continue; }
+      let span = 1;
+      while (i + span < columns.length && columns[i + span].tier === tier) span++;
+      H += `<th colspan="${span}" class="pivot-tier-head">${esc(PIVOT_TIER_LABEL[tier] || tier)}</th>`;
+      i += span;
+    }
+    H += '</tr>';
+  }
+  H += '<tr><th>존 / 메뉴·자재</th><th class="pivot-target-col">목표</th>';
   columns.forEach(c => {
     const dnd = (pivotTab === 'B' && c.ord != null)
       ? ` draggable="true" ondragstart="pivotDragStore(event,${c.ord})" ondragover="event.preventDefault()" ondrop="pivotDropStore(event,${c.ord})" style="cursor:grab;width:${colWidth}px"`
       : ` style="width:${colWidth}px"`;
-    H += `<th${dnd}>${esc(c.label)}<br><span class="pivot-d">${c.count}개점 · ${(c.guests / 1000).toFixed(1)}천명 · ${fmtNum(c.perCustomer, 0)}원</span></th>`;
+    // 브랜드/매장군처럼 여러 매장을 묶은 열은 "개점" 수가 의미 있어 그대로 두고, ③전매장의 개별
+    // 매장 열(위에 등급 라벨이 이미 붙음)은 매장당 항상 1개점이라 굳이 안 보여줘도 되므로 뺀다.
+    const statLine = c.tier
+      ? `${(c.guests / 1000).toFixed(1)}천명 · ${fmtNum(c.perCustomer, 0)}원`
+      : `${c.count}개점 · ${(c.guests / 1000).toFixed(1)}천명 · ${fmtNum(c.perCustomer, 0)}원`;
+    H += `<th${dnd}>${esc(c.label)}<br><span class="pivot-d">${statLine}</span></th>`;
   });
   H += '</tr></thead><tbody>';
 
