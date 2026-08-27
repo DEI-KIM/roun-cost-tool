@@ -1778,7 +1778,7 @@ function longestCommonSubstringLength(a, b) {
 // "자몽+에이드베이스", "배추+김치"처럼 원자재명 뒤에 가공 표시어가 붙어 전혀 다른 가공품이 된
 // 경우는 걸러내기 위한 목록 (자재 매칭 후보는 사용자가 한 번 더 확인하고 확정하는 화면이라,
 // 여기서 다 걸러내지 못해도 최종 확인 단계에서 걸러진다)
-const PROCESSED_NAME_MARKERS = ['소스', '전분', '에이드', '베이스', '김치', '잼', '시럽', '드레싱', '즙', '액상', '분말', '농축액', '과자', '치즈', '요거트', '아이스크림'];
+const PROCESSED_NAME_MARKERS = ['소스', '전분', '에이드', '베이스', '김치', '잼', '시럽', '드레싱', '즙', '액상', '분말', '농축액', '과자', '치즈', '요거트', '아이스크림', '크림', '스프레드', '피클', '절임', '장아찌'];
 function hasProcessedMarkerInRemainder(clean, matchStart, matchLen) {
   const remainder = clean.slice(0, matchStart) + clean.slice(matchStart + matchLen);
   return PROCESSED_NAME_MARKERS.some(m => remainder.includes(m));
@@ -3998,6 +3998,7 @@ function renderPivotCompare() {
     c.guests = cs.reduce((a, s) => a + s.guests, 0);
     c.count = c.codes.length;
     c.netSales = c.sales / 1.1;
+    c.perCustomer = c.guests > 0 ? c.sales / c.guests : null;
   });
 
   const resultByMenu = new Map(data.results.map(r => [r.menu_name, r]));
@@ -4021,7 +4022,7 @@ function renderPivotCompare() {
     const dnd = (pivotTab === 'B' && c.ord != null)
       ? ` draggable="true" ondragstart="pivotDragStore(event,${c.ord})" ondragover="event.preventDefault()" ondrop="pivotDropStore(event,${c.ord})" style="cursor:grab;width:${colWidth}px"`
       : ` style="width:${colWidth}px"`;
-    H += `<th${dnd}>${esc(c.label)}<br><span class="pivot-d">${c.count}개점 · ${(c.guests / 1000).toFixed(1)}천명</span></th>`;
+    H += `<th${dnd}>${esc(c.label)}<br><span class="pivot-d">${c.count}개점 · ${(c.guests / 1000).toFixed(1)}천명 · ${fmtNum(c.perCustomer, 0)}원</span></th>`;
   });
   H += '</tr></thead><tbody>';
 
