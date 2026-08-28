@@ -2352,7 +2352,7 @@ async function buildMaterialPriceResolver(seasonId) {
   const [{ data: usageRows, error: usageErr }, { data: recipeRows }, aliasRes, minMonthRes, maxMonthRes] = await Promise.all([
     sb.rpc('material_usage_totals_for_range', { p_start: rangeStart, p_end: rangeEnd }),
     fetchAllRows('recipe_items', q => q.eq('season_id', seasonId), 'material_code, material_price'),
-    sb.from('material_aliases').select('primary_material_code, alt_material_code').eq('status', 'confirmed'),
+    sb.from('material_aliases').select('primary_material_code, primary_material_name, alt_material_code, alt_material_name').eq('status', 'confirmed'),
     sb.from('material_usage').select('usage_month').gte('period_end', rangeStart).lt('period_end', rangeEnd)
       .not('usage_month', 'is', null).order('usage_month', { ascending: true }).limit(1).maybeSingle(),
     sb.from('material_usage').select('usage_month').gte('period_end', rangeStart).lt('period_end', rangeEnd)
@@ -2389,6 +2389,20 @@ async function buildMaterialPriceResolver(seasonId) {
   });
   const realPricePerGram = new Map(); // 대표코드 -> 원/g (시즌 전체 기간 브랜드 전체 가중평균)
   gramsByCluster.forEach((grams, key) => { if (grams > 0) realPricePerGram.set(key, costByCluster.get(key) / grams); });
+  // 코드 하나하나의 실제 단가(클러스터로 뭉치기 전) — "이 자재에 연결된 자재들 각각 얼마인지" 보여줄 때 씀.
+  const rawCodePricePerGram = new Map();
+  (usageRows || []).forEach(r => { if (r.material_code && r.total_grams > 0) rawCodePricePerGram.set(r.material_code, (Number(r.total_amount) || 0) / Number(r.total_grams)); });
+  // 별칭그룹 대표코드 -> 그 그룹에 속한 모든 원본 코드 (자재별 단가 대체용, 자재 연결 목록 표시용 둘 다 씀)
+  const clusterMembers = new Map();
+  const aliasNameByCode = new Map();
+  (confirmedAliases || []).forEach(a => {
+    [[a.primary_material_code, a.primary_material_name], [a.alt_material_code, a.alt_material_name]].forEach(([code, name]) => {
+      const root = find(code);
+      if (!clusterMembers.has(root)) clusterMembers.set(root, new Set());
+      clusterMembers.get(root).add(code);
+      if (name) aliasNameByCode.set(code, name);
+    });
+  });
 
   // 시즌 안에 실사용 근거가 전혀 없는 자재만, 시즌 시작 전 6개월 구매기록 평균으로 보완한다("헷징" 추정) —
   // 시즌 기간이 짧아서(예: 1주일치만 등록) 그 안에 안 산 자재가 많을 때, 메뉴 전체가 통째로 계산에서
@@ -2398,16 +2412,6 @@ async function buildMaterialPriceResolver(seasonId) {
     .filter(c => c && !realPricePerGram.has(find(c)));
   const extendedPricePerGram = new Map();
   if (codesNeedingExtended.length && season?.start_month) {
-    // 별칭그룹 대표코드만으로 조회하면 실제 구매기록은 "별칭"(예: 배추(국산,직송)) 쪽에 있어서 놓친다 —
-    // 같은 클러스터에 속한 자재코드를 전부 모아서 조회해야 한다.
-    const clusterMembers = new Map(); // 대표코드 -> 그 그룹에 속한 모든 원본 코드
-    (confirmedAliases || []).forEach(a => {
-      [a.primary_material_code, a.alt_material_code].forEach(code => {
-        const root = find(code);
-        if (!clusterMembers.has(root)) clusterMembers.set(root, new Set());
-        clusterMembers.get(root).add(code);
-      });
-    });
     const expandedCodes = new Set();
     codesNeedingExtended.forEach(c => {
       expandedCodes.add(c);
@@ -2459,7 +2463,7 @@ async function buildMaterialPriceResolver(seasonId) {
     return null;
   }
 
-  return { priceForCode, find, realPricePerGram, extendedPricePerGram, fallbackPriceByCode, costMonth };
+  return { priceForCode, find, realPricePerGram, extendedPricePerGram, fallbackPriceByCode, costMonth, rawCodePricePerGram, clusterMembers, aliasNameByCode };
 }
 
 // 메뉴별 "실제 g당원가"를 계산한다. buildMaterialPriceResolver로 얻은 자재별 단가를 레시피 BOM에 곱해
@@ -2471,7 +2475,7 @@ async function computeActualCostPerGram(seasonId) {
 
   const pricing = await buildMaterialPriceResolver(seasonId);
   if (pricing.error) return pricing;
-  const { priceForCode, costMonth } = pricing;
+  const { priceForCode, costMonth, rawCodePricePerGram, clusterMembers, aliasNameByCode, find } = pricing;
 
   const results = finalMenus.map(menu => {
     const bom = flatByMenu.get(menu);
@@ -2507,7 +2511,7 @@ async function computeActualCostPerGram(seasonId) {
     };
   });
 
-  return { results, costMonth };
+  return { results, costMonth, rawCodePricePerGram, clusterMembers, aliasNameByCode, find };
 }
 
 // RPC(material_usage_totals_for_range_by_store)는 PostgREST 기본 응답 상한(1000행)에 걸릴 수 있어서
@@ -4081,7 +4085,11 @@ async function loadPivotCompareData() {
   });
   const stores = [...storeAgg.values()].sort((a, b) => b.guests - a.guests);
 
-  return { dateRange, seasonId, results, designByMenu, costByMenu, costByMenuStore, stores, flat, targetByCategory, targetPrice, fromCache };
+  return {
+    dateRange, seasonId, results, designByMenu, costByMenu, costByMenuStore, stores, flat, targetByCategory, targetPrice, fromCache,
+    rawCodePricePerGram: costResult.rawCodePricePerGram, clusterMembers: costResult.clusterMembers,
+    aliasNameByCode: costResult.aliasNameByCode, findMaterial: costResult.find,
+  };
 }
 
 // storeCodes에 속한 매장들의 실제 그램·손님수를 합산 (데이터 있는 매장만 그램에 반영, 손님수는 항상 반영).
@@ -4295,7 +4303,13 @@ function renderPivotCompare() {
       const menuName = m.design.menu_name;
       const ings = (data.flat.flatByMenu.get(menuName) || new Map());
       const cookedWeight = data.flat.cookedWeightByMenu.get(menuName);
-      const hasParts = ings.size > 1 && cookedWeight > 0;
+      // 축산/야채는 대부분 메뉴 자체가 자재 하나짜리라(예: 차돌양지, 청경채) 레시피 배합비를 펼쳐볼 게
+      // 없다. 대신 "이 자재에 다른 공급처 코드가 몇 개나 연결돼 있고 각각 단가가 얼마인지"를 펼쳐 보여준다.
+      const isRawZone = zone === '축산' || zone === '야채';
+      const soleCode = ings.size === 1 ? [...ings.keys()][0] : null;
+      const aliasMembers = (isRawZone && soleCode) ? [...(data.clusterMembers.get(data.findMaterial(soleCode)) || [soleCode])] : null;
+      const hasAliasExpand = aliasMembers && aliasMembers.length > 1;
+      const hasParts = (ings.size > 1 && cookedWeight > 0) || hasAliasExpand;
       const mid = zone + '|' + menuName;
       H += `<tr class="pivot-menu"${hasParts ? ` onclick="pivotToggleIng('${esc(mid)}')"` : ''}><td title="${esc(menuName)}">` +
         (hasParts ? (pivotOpenIng[mid] ? '▾ ' : '▸ ') : '　') + esc(menuName) +
@@ -4309,7 +4323,17 @@ function renderPivotCompare() {
         H += `<td>${t.main}${t.secondary}</td>`;
       });
       H += '</tr>';
-      if (hasParts && pivotOpenIng[mid]) {
+      if (hasAliasExpand && pivotOpenIng[mid]) {
+        // 배합비가 아니라 "이 코드에 연결된 자재들과 각각의 실제 g당단가"만 참고용으로 보여준다
+        // (매장/그램 열은 이 메뉴 하나에 다 반영되어 있어 여기서 또 나눌 근거가 없으므로 비워둠).
+        aliasMembers.forEach(code => {
+          const name = data.flat.rawMaterialNameByCode.get(code) || data.aliasNameByCode.get(code) || code;
+          const price = data.rawCodePricePerGram.get(code);
+          H += `<tr class="pivot-ing"><td title="${esc(name)}">└ ${esc(name)} <span class="pivot-badge">g당${price != null ? fmtNum(price, 1) : '-'}원</span></td><td class="pivot-na pivot-target-col">—</td>`;
+          columns.forEach(() => { H += '<td class="pivot-na">—</td>'; });
+          H += '</tr>';
+        });
+      } else if (hasParts && pivotOpenIng[mid]) {
         [...ings.entries()].sort((a, b) => b[1] - a[1]).forEach(([code, g]) => {
           const share = g / cookedWeight;
           const ingName = data.flat.rawMaterialNameByCode.get(code) || code;
