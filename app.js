@@ -9,6 +9,12 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 // 저신뢰로 판정되는 걸 막는다.
 const WATER_CODES = ['음용수', '정제수'];
 
+// 정식 발주(물류)가 아니라 매장에서 직접 사입(비공식 구매)하는 자재라 material_usage에 실적이
+// 안 남는 것들 — 원가가 0원은 아니라서 waterRatio(국물 비중 계산)에는 안 섞지만, 가격근거 신뢰도
+// (groundedRatio) 계산에서는 물과 똑같이 분모에서 빼준다. 안 그러면 이 자재 하나 때문에(실적이
+// 영원히 없으므로) 메뉴 전체 원가율이 항상 0%/null로 막혀버린다(2026-08-28, 산초기름 사례).
+const GROUNDED_RATIO_EXEMPT_CODES = ['산초기름'];
+
 // Deleting thousands of ids in one .in() call makes the request URL too long and fails
 // with "Bad Request"; split into smaller chunks instead.
 async function deleteInChunks(table, ids, chunkSize = 200) {
@@ -2488,8 +2494,9 @@ async function computeActualCostPerGram(seasonId) {
       if (p) totalCost += grams * p.price;
       // 물은 원가가 항상 0원이라 구매 근거(real/extended)가 있든 없든 최종 원가에 영향이 없다 —
       // 물을 많이 쓰는 국물류 메뉴가 실제로는 문제없는데도 "가격 근거 부족"으로 원가가 안 뜨는 걸
-      // 막기 위해, 신뢰도 비율(분모) 계산에서는 물 그램수를 아예 빼고 본다.
-      if (WATER_CODES.includes(code)) return;
+      // 막기 위해, 신뢰도 비율(분모) 계산에서는 물 그램수를 아예 빼고 본다. 사입 자재(GROUNDED_RATIO_EXEMPT_CODES)도
+      // 같은 이유로 빼준다 — 이건 정식 구매 실적이 영원히 안 남을 뿐 실제 원가가 0원은 아니다.
+      if (WATER_CODES.includes(code) || GROUNDED_RATIO_EXEMPT_CODES.includes(code)) return;
       totalGrams += grams;
       if (!p) return;
       if (p.isReal) realGrams += grams;
@@ -2635,7 +2642,7 @@ async function computeActualCostPerGramByStore(seasonId) {
       bom.forEach((grams, code) => {
         const p = priceForCode(storeCode, code);
         if (p) totalCost += grams * p.price;
-        if (WATER_CODES.includes(code)) return;
+        if (WATER_CODES.includes(code) || GROUNDED_RATIO_EXEMPT_CODES.includes(code)) return;
         totalGrams += grams;
         if (p) groundedGrams += grams;
       });
