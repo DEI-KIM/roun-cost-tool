@@ -2571,9 +2571,29 @@ async function buildMaterialPriceResolverByStore(seasonId) {
     pricePerGramByStore.set(storeCode, priceMap);
   });
 
+  // 그 매장이 그 기간에 (별칭 묶음 전체를 통틀어) 아예 안 산 자재는, "완전히 다른 자재로 바뀌었다"는
+  // 신호일 수도 있지만 "그냥 이번 기간엔 재고가 남아 안 샀다"인 경우가 대부분이다. 이때는 매장을
+  // 넘어(원가 매칭이 끝난) 같은 자재코드를 산 다른 매장들의 단가로 채운다 — 같은 자재코드=같은
+  // 제품이라 매장이 달라도 단가가 사실상 같기 때문에, 아예 자재를 다른 걸로 착각해 새는 것보다 낫다.
+  // 별칭으로 묶인 "다른 코드"까지는 안 섞는다(그건 매장마다 실제 공급처가 달라 단가가 다를 수 있어서,
+  // 오늘 이 기능을 만든 원래 목적과 충돌한다) — 딱 "완전히 똑같은 코드"끼리만 매장을 넘어 채운다.
+  const gramsByRawCode = new Map(), costByRawCode = new Map();
+  (usageRows || []).forEach(r => {
+    if (!r.material_code || !r.total_grams) return;
+    const grams = Number(r.total_grams) || 0;
+    if (!grams) return;
+    gramsByRawCode.set(r.material_code, (gramsByRawCode.get(r.material_code) || 0) + grams);
+    costByRawCode.set(r.material_code, (costByRawCode.get(r.material_code) || 0) + (Number(r.total_amount) || 0));
+  });
+  const crossStorePriceByRawCode = new Map();
+  gramsByRawCode.forEach((grams, code) => { if (grams > 0) crossStorePriceByRawCode.set(code, costByRawCode.get(code) / grams); });
+
   function priceForCode(storeCode, code) {
-    const price = pricePerGramByStore.get(storeCode)?.get(find(code));
-    return price != null ? { price, isReal: true } : null;
+    const clusterPrice = pricePerGramByStore.get(storeCode)?.get(find(code));
+    if (clusterPrice != null) return { price: clusterPrice, isReal: true };
+    const crossStorePrice = crossStorePriceByRawCode.get(code);
+    if (crossStorePrice != null) return { price: crossStorePrice, isReal: true, isCrossStoreFallback: true };
+    return null;
   }
 
   return { priceForCode, find, storeCodes: [...pricePerGramByStore.keys()] };
