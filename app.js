@@ -2508,13 +2508,17 @@ async function computeActualCostPerGram(seasonId) {
     // 1회성 수기입력이라 검증된 적이 없어서, 대체 비중이 크면 엉뚱한 값을 그대로 실적에 반영하게 됨)
     const realRatio = totalGrams > 0 ? realGrams / totalGrams : 0;
     const groundedRatio = totalGrams > 0 ? groundedGrams / totalGrams : 0;
-    if (totalGrams <= 0 || groundedRatio < 0.95) {
+    // totalGrams가 0인 건 "근거가 아예 없다"가 아니라 "물/사입 자재를 뺐더니 남는 게 없다"는 뜻일 수도
+    // 있다(예: 산초기름처럼 메뉴 전체가 사입 단일자재인 경우) — 이 경우까지 null로 막으면 등록해 둔
+    // 단가(fallback)가 있는데도 원가율이 통째로 안 뜨는 문제가 재발한다. 진짜 근거부족은
+    // totalGrams>0인데 groundedRatio가 낮은 경우만 걸러낸다.
+    if (totalGrams > 0 && groundedRatio < 0.95) {
       return { menu_name: menu, actual_cost_per_gram: null, cost_source: null };
     }
     return {
       menu_name: menu,
       actual_cost_per_gram: totalCost / cookedWeight,
-      cost_source: realRatio >= 0.999 ? 'actual' : (realRatio >= 0.95 ? 'partial' : 'estimated'),
+      cost_source: totalGrams <= 0 ? 'estimated' : (realRatio >= 0.999 ? 'actual' : (realRatio >= 0.95 ? 'partial' : 'estimated')),
     };
   });
 
