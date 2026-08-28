@@ -4054,11 +4054,22 @@ async function loadPivotCompareData() {
     fetchAllRows('category_summary', q => q.eq('season_id', seasonId)),
     getTargetPrice(seasonId),
     getActualCostPerGramByStore(seasonId),
+    // 자재 펼치기(축산/야채)에서 보여줄 매장x자재 실제 구매량은 시즌 전체가 아니라 지금 보고 있는
+    // 기간(dateRange) 그대로여야 한다 — getActualCostPerGramByStore의 매장별 "단가"는 안정적인
+    // 시즌 전체 가중평균을 쓰지만, 여기서 보여줄 "실제 구매량"은 화면에 뜬 기간과 안 맞으면
+    // (예: 시즌 전체 6주치를 8월 한 달 매출로 나눔) 원가율이 터무니없이 커 보이는 버그가 생긴다.
+    fetchAllRpcPages('material_usage_totals_for_range_by_store', { p_start: dateRange.start, p_end: nextDay(dateRange.end) }),
   ];
   if (!cachedRows) basePromises.push(computeMenuConsumption(null, dateRange));
   const settled = await Promise.all(basePromises);
-  const [costResult, designsRes, salesRes, flat, categorySummaryRes, targetPrice, costByStoreResult] = settled;
+  const [costResult, designsRes, salesRes, flat, categorySummaryRes, targetPrice, costByStoreResult, rawUsageForPeriodRes] = settled;
   if (costResult.error) return { error: costResult.error };
+  const usageByStoreRawCodeForPeriod = new Map();
+  (rawUsageForPeriodRes.data || []).forEach(r => {
+    if (!r.material_code || !r.store_code) return;
+    if (!usageByStoreRawCodeForPeriod.has(r.store_code)) usageByStoreRawCodeForPeriod.set(r.store_code, new Map());
+    usageByStoreRawCodeForPeriod.get(r.store_code).set(r.material_code, { grams: Number(r.total_grams) || 0, amount: Number(r.total_amount) || 0 });
+  });
   const costByMenuStore = costByStoreResult.error ? new Map() : costByStoreResult.byMenu;
   if (designsRes.error) return { error: designsRes.error.message || String(designsRes.error) };
   if (salesRes.error) return { error: salesRes.error.message || String(salesRes.error) };
@@ -4067,7 +4078,7 @@ async function loadPivotCompareData() {
   let results = null, fromCache = false;
   if (cachedRows) { results = reconstructResultsFromSnapshot(cachedRows); fromCache = true; }
   if (!results) {
-    const consumption = settled[7];
+    const consumption = settled[8];
     if (consumption.error) return { error: consumption.error };
     results = consumption.results;
     if (closed) savePivotSnapshotFromResults(seasonId, periodUnit, dateRange.start, dateRange.end, results);
@@ -4098,7 +4109,7 @@ async function loadPivotCompareData() {
     dateRange, seasonId, results, designByMenu, costByMenu, costByMenuStore, stores, flat, targetByCategory, targetPrice, fromCache,
     rawCodePricePerGram: costResult.rawCodePricePerGram, clusterMembers: costResult.clusterMembers,
     aliasNameByCode: costResult.aliasNameByCode, findMaterial: costResult.find,
-    usageByStoreRawCode: costByStoreResult.usageByStoreRawCode,
+    usageByStoreRawCode: usageByStoreRawCodeForPeriod,
   };
 }
 
