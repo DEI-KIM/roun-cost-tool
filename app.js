@@ -2600,7 +2600,16 @@ async function buildMaterialPriceResolverByStore(seasonId) {
     return null;
   }
 
-  return { priceForCode, find, storeCodes: [...pricePerGramByStore.keys()] };
+  // 매장x원본코드(클러스터로 묶기 전) 실제 구매량 — "이 매장이 이 자재코드를 얼마나 샀는지"를
+  // 그대로 보여줄 때 씀(축산/야채 자재 연결 목록 펼치기 전용).
+  const usageByStoreRawCode = new Map();
+  (usageRows || []).forEach(r => {
+    if (!r.material_code || !r.store_code) return;
+    if (!usageByStoreRawCode.has(r.store_code)) usageByStoreRawCode.set(r.store_code, new Map());
+    usageByStoreRawCode.get(r.store_code).set(r.material_code, { grams: Number(r.total_grams) || 0, amount: Number(r.total_amount) || 0 });
+  });
+
+  return { priceForCode, find, storeCodes: [...pricePerGramByStore.keys()], usageByStoreRawCode };
 }
 
 // computeActualCostPerGram의 매장별 버전 — 메뉴x매장별 실제 g당원가.
@@ -2613,7 +2622,7 @@ async function computeActualCostPerGramByStore(seasonId) {
 
   const pricing = await buildMaterialPriceResolverByStore(seasonId);
   if (pricing.error) return pricing;
-  const { priceForCode, storeCodes } = pricing;
+  const { priceForCode, storeCodes, usageByStoreRawCode } = pricing;
 
   const byMenu = new Map();
   finalMenus.forEach(menu => {
@@ -2638,7 +2647,7 @@ async function computeActualCostPerGramByStore(seasonId) {
     if (byStore.size) byMenu.set(menu, byStore);
   });
 
-  return { byMenu };
+  return { byMenu, usageByStoreRawCode };
 }
 
 // "매장별 히트맵"·"메뉴 진단" 탭 자체를 없애면서 이 두 탭 전용 렌더 코드를 정리함 — 다른 어떤 탭도
@@ -4089,6 +4098,7 @@ async function loadPivotCompareData() {
     dateRange, seasonId, results, designByMenu, costByMenu, costByMenuStore, stores, flat, targetByCategory, targetPrice, fromCache,
     rawCodePricePerGram: costResult.rawCodePricePerGram, clusterMembers: costResult.clusterMembers,
     aliasNameByCode: costResult.aliasNameByCode, findMaterial: costResult.find,
+    usageByStoreRawCode: costByStoreResult.usageByStoreRawCode,
   };
 }
 
@@ -4330,7 +4340,16 @@ function renderPivotCompare() {
           const name = data.flat.rawMaterialNameByCode.get(code) || data.aliasNameByCode.get(code) || code;
           const price = data.rawCodePricePerGram.get(code);
           H += `<tr class="pivot-ing"><td title="${esc(name)}">└ ${esc(name)} <span class="pivot-badge">g당${price != null ? fmtNum(price, 1) : '-'}원</span></td><td class="pivot-na pivot-target-col">—</td>`;
-          columns.forEach(() => { H += '<td class="pivot-na">—</td>'; });
+          columns.forEach(c => {
+            let grams = 0, amt = 0, any = false;
+            c.codes.forEach(storeCode => {
+              const u = data.usageByStoreRawCode.get(storeCode)?.get(code);
+              if (u) { grams += u.grams; amt += u.amount; any = true; }
+            });
+            if (!any || grams <= 0) { H += '<td class="pivot-na">—</td>'; return; }
+            const t = pivotValueTxt(mode, amt, grams, c.guests, c.netSales);
+            H += `<td class="pivot-d">${t.main}</td>`;
+          });
           H += '</tr>';
         });
       } else if (hasParts && pivotOpenIng[mid]) {
