@@ -4350,8 +4350,14 @@ function renderPivotCompare() {
       columns.forEach(c => {
         const g = pivotGroupValue(m.result, c.codes);
         if (g.grams == null) { H += '<td class="pivot-na">—</td>'; return; }
-        const amt = pivotGroupAmount(m.result, c.codes, data.costByMenuStore.get(menuName)).amt;
-        const t = pivotValueTxt(mode, amt, g.grams, g.customers, c.netSales);
+        const ga = pivotGroupAmount(m.result, c.codes, data.costByMenuStore.get(menuName));
+        // 그램(소비량)은 추정됐는데 이 매장군에 원가 근거가 하나도 없으면(ga.grams==null) 금액이
+        // 필요한 모드(원가율%·원가액)에서는 "0"이 아니라 "근거없음"으로 보여야 한다 — 안 그러면
+        // 진짜 0원짜리 메뉴와 "가격 매칭이 하나도 안 된" 메뉴가 똑같이 0.0%로 보여 구분이 안 된다
+        // (2026-08-28, 베이컨크림파스타 사례 — 자재 2개가 이번 시즌엔 안 팔려서 매장별 원가가
+        // 전부 없었는데 0.0%로 표시돼 문제없어 보였음).
+        if (mode !== 'g' && ga.grams == null) { H += '<td class="pivot-na">—</td>'; return; }
+        const t = pivotValueTxt(mode, ga.amt, g.grams, g.customers, c.netSales);
         H += `<td>${t.main}${t.secondary}</td>`;
       });
       H += '</tr>';
