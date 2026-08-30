@@ -13,7 +13,7 @@ const WATER_CODES = ['음용수', '정제수'];
 // 안 남는 것들 — 원가가 0원은 아니라서 waterRatio(국물 비중 계산)에는 안 섞지만, 가격근거 신뢰도
 // (groundedRatio) 계산에서는 물과 똑같이 분모에서 빼준다. 안 그러면 이 자재 하나 때문에(실적이
 // 영원히 없으므로) 메뉴 전체 원가율이 항상 0%/null로 막혀버린다(2026-08-28, 산초기름 사례).
-const GROUNDED_RATIO_EXEMPT_CODES = ['산초기름'];
+const GROUNDED_RATIO_EXEMPT_CODES = ['산초기름', '대추'];
 
 // Deleting thousands of ids in one .in() call makes the request URL too long and fails
 // with "Bad Request"; split into smaller chunks instead.
