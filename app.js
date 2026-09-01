@@ -717,17 +717,18 @@ function renderCostTrendChart(months, ratios, targetRatio) {
   const width = 780, height = 200, padding = { top: 14, right: 16, bottom: 22, left: 40 };
   const plotW = width - padding.left - padding.right;
   const plotH = height - padding.top - padding.bottom;
-  const allValues = valid.concat(targetRatio != null ? [targetRatio] : []);
-  const maxV = Math.max(...allValues) * 1.15 || 1;
+  // 실적 원가율이 보통 25~45% 사이에서만 움직여서, 0%부터 잡으면 월별 변동폭이 눌려 보인다 —
+  // 고정 범위로 잡아 차이가 잘 드러나게 한다(2026-08-31, 사장님 지정).
+  const minV = 25, maxV = 45;
   const xFor = (i) => months.length > 1 ? padding.left + (plotW * i / (months.length - 1)) : padding.left + plotW / 2;
-  const yFor = (v) => padding.top + plotH - (plotH * v / maxV);
+  const yFor = (v) => padding.top + plotH - (plotH * (v - minV) / (maxV - minV));
 
   const gridLines = Array.from({ length: 4 }, (_, i) => {
     const y = padding.top + plotH * i / 3;
     return `<line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="var(--line)" stroke-width="1" />`;
   }).join('');
   const yLabels = Array.from({ length: 4 }, (_, i) => {
-    const v = maxV * (3 - i) / 3;
+    const v = minV + (maxV - minV) * (3 - i) / 3;
     const y = padding.top + plotH * i / 3;
     return `<text x="${padding.left - 6}" y="${y + 3}" font-size="10" fill="var(--muted)" text-anchor="end">${v.toFixed(0)}%</text>`;
   }).join('');
