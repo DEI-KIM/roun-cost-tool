@@ -1591,7 +1591,6 @@ const QUADRANT_META = {
   C: { label: '고단가·저취식', cls: 'is-warn', pillCls: 'pill-warn' },
   D: { label: '저단가·저취식', cls: '', pillCls: '' },
 };
-const URGENCY_TIERS = ['즉시', '우선', '검토', '낮음'];
 // 이 조닝들은 대부분 자재 1개짜리 단독메뉴라 손댈 수 있는 방법이 g당단가(공급처 협상) 하나뿐이라
 // "메뉴 진단"(자재 조합을 바꿔볼 여지가 있는 메뉴 찾기)의 대상에서 뺀다.
 const MENU_DIAGNOSIS_EXCLUDED_CATEGORIES = ['축산', '야채', '소스', '토핑', '육수'];
@@ -1628,19 +1627,11 @@ function computeMenuDiagnosisQuadrants(rows) {
   return { diagRows, medianCost, medianConsumption, quadrantSummary };
 }
 
-// 객당원가(value) 기준 백분위수로 긴급도를 매긴다. 시즌마다 물가 수준이 달라지므로 고정 금액(예: "70원 이상")
-// 대신 상대적 기준(P90/P75/P50)을 쓴다.
-function computeUrgencyTiers(diagRows) {
-  const sortedValues = diagRows.map(r => r.value).sort((a, b) => a - b);
-  const p90 = percentile(sortedValues, 0.9), p75 = percentile(sortedValues, 0.75), p50 = percentile(sortedValues, 0.5);
-  diagRows.forEach(r => {
-    r.tier = r.value >= p90 ? '즉시' : r.value >= p75 ? '우선' : r.value >= p50 ? '검토' : '낮음';
-  });
-  return { p90, p75, p50 };
-}
-
-// menuDiagnosisCache/렌더 함수는 "메뉴 진단" 탭 자체를 없애면서 같이 정리함 — computeMenuDiagnosisQuadrants·
-// computeUrgencyTiers(위)는 VE 탭이 그대로 재사용하므로 남겨둔다.
+// menuDiagnosisCache/렌더 함수는 "메뉴 진단" 탭 자체를 없애면서 같이 정리함 — computeMenuDiagnosisQuadrants(위)는
+// VE 탭이 그대로 재사용하므로 남겨둔다.
+// VE 탭 대상 기준: 존별 g당원가가 이 값 이상인 메뉴 (2026-08-31, 사장님 지정 — 예전엔 객당원가 상위 10%
+// "즉시" 긴급도로 자동 산출했는데, 존마다 절대 기준으로 직접 정하는 방식으로 변경).
+const VE_TARGET_MIN_COST_BY_ZONE = { '핫': 3.5, '콜': 3, '디저트': 5 };
 
 // =====================================================================
 // 레시피 기반 메뉴별 인당소비량 자동계산 엔진
@@ -4731,7 +4722,7 @@ $('#pivotTsFromSelect').addEventListener('change', loadPivotTimeSeriesView);
 $('#pivotTsModeSelect').addEventListener('change', renderPivotTimeSeries);
 
 // ---------- ④ VE (AS-IS→TO-BE) ----------
-// 대상: 메뉴 진단 탭의 "즉시" 긴급도 메뉴(computeUrgencyTiers, 상위 10%) — 그대로 재사용.
+// 대상: VE_TARGET_MIN_COST_BY_ZONE에 정의된 존별 g당원가 기준 이상인 메뉴.
 // AS-IS 취식g/객은 menu_consumption.consumption_per_person_brand를 쓴다(시즌 전체 손님수 기준으로
 // 통일한 값) — 메뉴별 원래 consumption_per_person을 쓰면 디너/주말 한정 메뉴가 브랜드 원가율 영향력을
 // 과대평가받는다(이번 세션 초반 브랜드 실적 원가율 31%→37% 오류의 원인과 동일한 함정).
@@ -4745,8 +4736,7 @@ async function buildVeFacts() {
   // 로드 순서에 의존하지 않게 한다.
   await loadMenuConsumptionView();
   const { diagRows } = computeMenuDiagnosisQuadrants(menuConsumptionRowsCache);
-  computeUrgencyTiers(diagRows);
-  const urgentRows = diagRows.filter(r => r.tier === '즉시');
+  const urgentRows = diagRows.filter(r => VE_TARGET_MIN_COST_BY_ZONE[r.category] != null && r.costPerGram >= VE_TARGET_MIN_COST_BY_ZONE[r.category]);
   if (!urgentRows.length) return null;
   const urgentNames = urgentRows.map(r => r.menu_name);
   const { data: consRows } = await fetchAllRows(
@@ -4847,7 +4837,7 @@ function renderVE() {
   tbl.classList.remove('pivot-table-compact'); // 시계열에서만 쓰는 좁은 폭 모드 — 다른 탭으로 오면 해제
   const F = veFactsCache;
   if (!F) {
-    tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">"즉시" 긴급도 메뉴가 없습니다 (메뉴 진단 탭 기준).</td></tr></tbody>';
+    tbl.innerHTML = '<tbody><tr><td style="padding:24px;color:var(--muted)">기준(핫 g당3.5원·콜 g당3원·디저트 g당5원 이상)을 만족하는 메뉴가 없습니다.</td></tr></tbody>';
     $('#pivotVeSummary').innerHTML = '';
     return;
   }
