@@ -2661,10 +2661,11 @@ async function computeActualCostPerGramByStore(seasonId) {
 // 다르므로, 합산 전용으로는 시즌 전체 손님 수로 나눈 consumption_per_person_brand를 써야 한다
 // (그냥 consumption_per_person을 더하면 주말·디너 한정 메뉴가 과대 반영되어 브랜드 실적이 부풀려진다).
 async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, totalSales, totalCustomers, consumptionResults) {
-  const [{ data: designs }, { data: consumption }, { data: recipeMenus }] = await Promise.all([
+  const [{ data: designs }, { data: consumption }, { data: recipeMenus }, costByStoreResult] = await Promise.all([
     fetchAllRows('menu_designs', q => q.eq('season_id', seasonId)),
     fetchAllRows('menu_consumption', q => q.eq('season_id', seasonId)),
     fetchAllRows('recipe_items', q => q.eq('season_id', seasonId), 'menu_name, category'),
+    getActualCostPerGramByStore(seasonId),
   ]);
   const consumptionByMenu = Object.fromEntries((consumption || []).map(c => [c.menu_name, c]));
   const brandByMenu = Object.fromEntries((consumptionResults || []).map(r => [r.menu_name, r]));
@@ -2678,51 +2679,69 @@ async function rebuildCategoryActualRollupFromMenus(seasonId, targetPrice, total
   (recipeMenus || []).forEach(r => { if (r.menu_name && !r.menu_name.startsWith('#') && !recipeCategoryByMenu.has(r.menu_name)) recipeCategoryByMenu.set(r.menu_name, r.category); });
   const allMenuNames = new Set([...designByMenu.keys(), ...recipeCategoryByMenu.keys()]);
 
+  // ②③ 피벗(매장별 실단가, 폴백 없음)과 똑같은 방식으로 메뉴 하나의 "실제 쓴 돈"을 구한다 — 매장×자재
+  // 조합에 그 시즌 실구매 근거가 있는 부분만 더하고, 근거 없는 매장/자재는 0으로 둔다(레시피 등록가
+  // 같은 미검증 값으로 절대 안 채움). 이렇게 해야 ①목표 탭 실적이 ②③ 피벗과 항상 같은 숫자가 된다
+  // (2026-08-31, 목표 탭 41.3% vs 피벗 시즌별 37.1% 불일치 — 목표 탭이 레시피 등록가 폴백을 써서
+  // 부풀려졌던 게 원인이었음).
+  function pivotStyleMenuAmt(menuName) {
+    const perStore = brandByMenu[menuName]?.per_store;
+    const byStore = costByStoreResult?.byMenu?.get(menuName);
+    if (!perStore || !byStore) return 0;
+    let amt = 0;
+    perStore.forEach(s => {
+      if (s.grams == null) return;
+      const cost = byStore.get(s.store_code)?.actual_cost_per_gram;
+      if (cost == null) return;
+      amt += s.grams * cost;
+    });
+    return amt;
+  }
+
   const byCat = {};
   allMenuNames.forEach(menuName => {
     const m = designByMenu.get(menuName);
     const category = m?.category ?? recipeCategoryByMenu.get(menuName);
     const c = consumptionByMenu[menuName];
     const b = brandByMenu[menuName];
-    // 실제 자재사용량 기준으로 재계산한 g당원가가 있으면 그걸 쓰고, 아직 계산 전인 메뉴는 설계 단가로 대체
-    const costPerGram = c?.actual_cost_per_gram ?? m?.cost_per_gram;
     // 합산용 인당소비량: 시즌 전체 손님 기준(consumption_per_person_brand)을 우선 쓰고,
     // 매장 실사용 근거가 없어 설계값으로 대체된 메뉴(design_fallback)는 그 값 그대로 둔다.
     const consumptionForRollup = b?.consumption_per_person_brand ?? c?.consumption_per_person;
     const consumptionForRollupExclWater = b?.consumption_per_person_brand_excl_water ?? c?.consumption_per_person_excl_water ?? consumptionForRollup;
-    if (!category || consumptionForRollup == null || costPerGram == null) return;
+    if (!category || consumptionForRollup == null) return;
     if (!byCat[category]) byCat[category] = [];
     byCat[category].push({
-      cost_per_gram: costPerGram, consumption_per_person: consumptionForRollup,
+      amt: pivotStyleMenuAmt(menuName), consumption_per_person: consumptionForRollup,
       consumption_per_person_excl_water: consumptionForRollupExclWater,
     });
   });
 
   const categoriesWithData = new Set(Object.keys(byCat));
+  let brandAmt = 0;
   const upserts = DASHBOARD_CATEGORIES.filter(cat => categoriesWithData.has(cat)).map(category => {
     const list = byCat[category];
-    let totalC = 0, totalCost = 0, totalCExclWater = 0;
+    let totalC = 0, totalAmt = 0, totalCExclWater = 0;
     list.forEach(r => {
       totalC += r.consumption_per_person;
-      totalCost += r.consumption_per_person * r.cost_per_gram;
+      totalAmt += r.amt;
       totalCExclWater += r.consumption_per_person_excl_water;
     });
-    const costPerGram = totalC ? totalCost / totalC : null;
+    brandAmt += totalAmt;
+    // g당원가는 "그 존이 실제로 쓴 돈(피벗과 동일 기준) ÷ (인당소비량×손님수)"로 역산한다 —
+    // 이래야 대시보드 표의 g당원가×인당소비량÷객단가(computeCostRatio)가 피벗의 원가율%과 일치한다.
+    const costPerGram = (totalC && totalCustomers) ? totalAmt / (totalC * totalCustomers) : null;
     return {
       season_id: seasonId, category,
       actual_cost_per_gram: costPerGram, actual_consumption_per_person: totalC,
       actual_consumption_per_person_excl_water: totalCExclWater,
-      actual_cost_ratio: computeCostRatio(costPerGram, totalC, targetPrice),
+      actual_cost_ratio: totalSales ? (totalAmt / (totalSales / 1.1) * 100) : null,
     };
   });
   if (upserts.length) {
     await sb.from('category_summary').upsert(upserts, { onConflict: 'season_id,category' });
   }
 
-  // 브랜드 전체 실적원가율도 갱신된 카테고리 실적 기준으로 다시 계산
-  const { data: freshCategorySummary } = await fetchAllRows('category_summary', q => q.eq('season_id', seasonId).in('category', DASHBOARD_CATEGORIES));
-  const brandActual = weightedTotals(freshCategorySummary || [], 'actual');
-  const brandActualRatio = computeCostRatio(brandActual.costPerGram, brandActual.consumption, targetPrice);
+  const brandActualRatio = totalSales ? (brandAmt / (totalSales / 1.1) * 100) : null;
 
   // 예전 "실적 자동 반영" 버튼이 하던 객단가/매출/객수 저장도 여기서 같이 처리 (다른 탭들이 target_price_per_person에 의존함)
   const targetPayload = {
