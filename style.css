@@ -474,3 +474,12 @@ select.pivot-ve-in { width: auto; text-align: left; }
 .pivot-ve-bad { color: var(--crit); font-weight: 700; }
 .pivot-vek { display: inline-block; margin-right: 22px; font-weight: 400; color: var(--muted); }
 .pivot-vek b { font-size: 15px; color: var(--ink); margin-left: 5px; }
+
+/* ---- 글로벌 섹션 내비 (매출/생산성/원가 — 사이트 공통) ---- */
+.gnav { display:flex; align-items:center; gap:6px; padding:8px 20px 0; border-bottom:1px solid var(--line, #ebebeb); background:var(--surface, #fff); }
+.gnav-brand { font-weight:800; font-size:13px; letter-spacing:.08em; margin-right:10px; color:var(--ink, #131518); }
+.gnav-item { font-size:13px; font-weight:700; color:#888; padding:6px 16px 8px; border-radius:12px 12px 0 0; text-decoration:none; }
+.gnav-item:hover { color:var(--ink, #131518); }
+.gnav-item.on { background:#2f3030; color:#fff; }
+.gnav-item.disabled { color:#c0c0c0; cursor:default; }
+.gnav-soon { font-size:10px; font-weight:500; margin-left:4px; opacity:.8; }
