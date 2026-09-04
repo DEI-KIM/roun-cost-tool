@@ -159,18 +159,32 @@ function toggleView(loggedIn) {
   $('#appView').hidden = !loggedIn;
 }
 
+// 이메일 인증(매직링크) 로그인 — 사내 도메인만. 비밀번호 로그인은 폐기(2026-09-04),
+// 도메인 제한은 DB 트리거(ot_email_domain_check)로도 이중 차단됨.
 $('#loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const email = $('#loginEmail').value.trim();
-  const password = $('#loginPassword').value;
+  const email = $('#loginEmail').value.trim().toLowerCase();
   const errEl = $('#loginError');
-  errEl.hidden = true;
-  const { error } = await sb.auth.signInWithPassword({ email, password });
+  const sentEl = $('#loginSent');
+  errEl.hidden = true; sentEl.hidden = true;
+  if (!email.endsWith('@eland.co.kr')) {
+    errEl.textContent = '사내 이메일(@eland.co.kr)만 사용할 수 있습니다.';
+    errEl.hidden = false;
+    return;
+  }
+  const btn = $('#loginSubmit');
+  btn.disabled = true; btn.textContent = '발송 중…';
+  const { error } = await sb.auth.signInWithOtp({
+    email, options: { emailRedirectTo: location.origin + location.pathname },
+  });
+  btn.disabled = false; btn.textContent = '인증 메일 받기';
   if (error) {
-    errEl.textContent = `로그인 실패: ${error.message} (status ${error.status ?? '-'})`;
+    errEl.textContent = `발송 실패: ${error.message} (status ${error.status ?? '-'})`;
     errEl.hidden = false;
     console.error('login error', error);
+    return;
   }
+  sentEl.hidden = false;
 });
 
 $('#logoutBtn').addEventListener('click', async () => {
