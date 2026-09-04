@@ -184,6 +184,19 @@ let booted = false;
 async function bootApp() {
   if (booted) return;
   booted = true;
+  // 조회 전용(비-planner) 계정 표시 — 실제 쓰기 차단은 DB RLS(ot_006 마이그레이션)가 담당
+  try {
+    const { data: u } = await sb.auth.getUser();
+    const { data: prof } = await sb.from('ot_profiles').select('role').eq('user_id', u.user.id).maybeSingle();
+    if (!prof || prof.role !== 'planner') {
+      document.body.classList.add('viewer');
+      const bar = document.createElement('div');
+      bar.className = 'viewer-banner';
+      bar.textContent = '조회 전용 계정입니다 — 데이터 수정은 관리자 계정에서만 가능합니다.';
+      const hdr = document.querySelector('.app-header');
+      if (hdr) hdr.parentNode.insertBefore(bar, hdr);
+    }
+  } catch (e) { /* 프로필 조회 실패 시 표시만 생략 (RLS는 그대로 동작) */ }
   await loadSeasons();
   setupTabNav();
   setupSeasonControls();

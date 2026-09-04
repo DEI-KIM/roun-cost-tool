@@ -50,12 +50,12 @@ async function enterApp(user) {
       if (data && data.length) { gradeCost = {}; for (const g of data) gradeCost[g.grade] = g.std_monthly_cost; }
     } catch (e) { /* 실패 시 평균 단가 폴백 */ }
   }
-  // 기준정보·전사 대시보드는 planner 전용 (PRD §7)
+  // 기준정보는 planner 전용, 전사 대시보드는 모두 공개
   document.querySelector('#otNav button[data-view="ref"]').hidden = !isPlanner;
-  document.querySelector('#otNav button[data-view="dash"]').hidden = !isPlanner;
-  if (isPlanner) { renderDash(); renderRef(); }
+  renderDash();
+  if (isPlanner) renderRef();
   buildPlanInputs(); render();
-  showView(isPlanner ? 'dash' : 'plan');
+  showView('dash');
 }
 $('loginForm').addEventListener('submit', async e => {
   e.preventDefault();

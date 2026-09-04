@@ -483,3 +483,7 @@ select.pivot-ve-in { width: auto; text-align: left; }
 .gnav-item.on { background:#2f3030; color:#fff; }
 .gnav-item.disabled { color:#c0c0c0; cursor:default; }
 .gnav-soon { font-size:10px; font-weight:500; margin-left:4px; opacity:.8; }
+
+/* ---- 조회 전용(비-planner) 계정 ---- */
+.viewer-banner { background:#fdf6e7; color:#a1761d; font-size:12px; font-weight:700; padding:8px 20px; border-bottom:1px solid #f0e3c0; }
+body.viewer .btn-primary, body.viewer #newSeasonBtn, body.viewer .pivot-btn { pointer-events:none; opacity:.4; }
