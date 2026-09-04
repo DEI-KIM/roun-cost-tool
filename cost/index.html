@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>로운 원가설계판</title>
-<link rel="stylesheet" href="../style.css?v=202609041651">
+<link rel="stylesheet" href="../style.css?v=202609041701">
 </head>
 <body>
 
@@ -442,6 +442,43 @@
         <h2>농산 모니터링</h2>
         <p class="panel-sub">자재 사용량 탭에서 비고가 "농산"이면서 과세여부가 "비과세"인 자재를 품목별로 모아 단가를 비교합니다. 시장단가는 시장 데이터 탭에서 이름이 비슷한 상·특 등급 항목의 g당단가 평균으로 자동 계산됩니다.</p>
       </div>
+
+      <div class="pivot-tabs">
+        <button class="pivot-tab-btn produce-subtab-btn is-on" data-produce-tab="table" type="button">① 품목별 단가 비교</button>
+        <button class="pivot-tab-btn produce-subtab-btn" data-produce-tab="cards" type="button">② 카드뷰</button>
+      </div>
+
+      <!-- ② 카드뷰 -->
+      <div id="producePanelCards" style="display:none">
+        <div class="card">
+          <div class="card-head">
+            <h3>카드뷰</h3>
+            <div class="card-head-actions">
+              <span class="hint">등급</span>
+              <span id="produceGradeChips" class="produce-grade-chips">
+                <button type="button" class="chip is-on" data-grade="상">상</button>
+                <button type="button" class="chip" data-grade="특">특</button>
+                <button type="button" class="chip" data-grade="all">전체</button>
+              </span>
+              <span class="hint">정렬</span>
+              <select id="produceCardSort">
+                <option value="market">절감액순</option>
+                <option value="usage">사용액순</option>
+                <option value="pct">차이율순</option>
+                <option value="gpg">g당단가순</option>
+                <option value="name">품목순</option>
+              </select>
+              <input type="search" id="produceCardSearch" placeholder="품목 검색…" style="width:140px">
+              <span class="hint" id="produceCardCount"></span>
+            </div>
+          </div>
+          <div id="produceCardGrid" class="produce-cards"></div>
+          <p class="hint" style="margin-top:10px">카드의 % = 로운 단가가 시장 평균 대비 얼마나 높은지(절감 여지). 카드를 클릭하면 ① 탭에서 월별 추이가 열립니다. 연월은 ① 탭 상단에서 선택한 달 기준.</p>
+        </div>
+      </div>
+
+      <!-- ① 품목별 단가 비교 -->
+      <div id="producePanelTable">
       <div class="card">
         <div class="card-head">
           <h3>품목별 단가 비교</h3>
@@ -474,6 +511,7 @@
           </table>
         </div>
       </div>
+      </div><!-- /producePanelTable -->
     </section>
 
     <!-- 그룹: 데이터 (시장데이터/자재사용량/매출·객수) -->
@@ -683,6 +721,6 @@
 
 <script src="../vendor/supabase.min.js"></script>
 <script src="../vendor/xlsx.full.min.js"></script>
-<script src="../app.js?v=202609041651"></script>
+<script src="../app.js?v=202609041701"></script>
 </body>
 </html>

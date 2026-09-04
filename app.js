@@ -2850,6 +2850,33 @@ $('#computeConsumptionBtn').addEventListener('click', async () => {
 })();
 
 let produceRowsCache = [];
+
+// ---- 추이/카드뷰용 서버 집계 캐시 ----
+// 예전엔 품목 클릭마다 material_usage 농산 전체(수만 행)를 1,000행씩 다시 받아 1~2분 걸렸음.
+// 서버 RPC(produce_usage_monthly / market_gpg_monthly)가 월별로 집계한 ~3,500행만 세션당 1회
+// 백그라운드로 받아두고, 클릭 시엔 캐시 조회만 한다.
+let produceAggPromise = null;
+function ensureProduceAgg() {
+  if (!produceAggPromise) {
+    produceAggPromise = Promise.all([
+      sb.rpc('produce_usage_monthly'),
+      sb.rpc('market_gpg_monthly'),
+    ]).then(([u, m]) => {
+      if (u.error || m.error) throw (u.error || m.error);
+      return { usage: u.data || [], market: m.data || [] };
+    }).catch(err => { produceAggPromise = null; throw err; });
+  }
+  return produceAggPromise;
+}
+
+// ---- 농산 서브탭 (① 품목별 단가 비교 / ② 카드뷰) ----
+let produceCardState = { grade: '상', sort: 'market', search: '' };
+function showProduceTab(which) {
+  $$('.produce-subtab-btn').forEach(b => b.classList.toggle('is-on', b.dataset.produceTab === which));
+  $('#producePanelTable').style.display = which === 'table' ? '' : 'none';
+  $('#producePanelCards').style.display = which === 'cards' ? '' : 'none';
+  if (which === 'cards') renderProduceCards();
+}
 // "고추" ↔ "생고추", "깐 양배추" ↔ "양배추" 처럼 흔한 수식어 차이만 있는 경우를 매칭.
 // 단순 포함관계(substring)로 하면 "고추"가 "고추잎"(전혀 다른 품목)까지 잡아버려서,
 // 알려진 수식어만 떼어내고 정확히 같아야 매칭되도록 제한한다.
@@ -2997,6 +3024,88 @@ async function loadProduceMonitoring() {
   });
 
   renderProduceTable();
+  ensureProduceAgg().catch(() => {}); // 추이·카드뷰용 집계를 백그라운드로 미리 데워둠
+  const cardsPanel = $('#producePanelCards');
+  if (cardsPanel && cardsPanel.style.display !== 'none') renderProduceCards();
+}
+
+// ---- ② 카드뷰 ----
+async function renderProduceCards() {
+  const grid = $('#produceCardGrid');
+  if (!grid) return;
+  if (!produceRowsCache.length) { grid.innerHTML = '<p class="hint">해당 연월에 농산 자재 데이터가 없습니다.</p>'; return; }
+  grid.innerHTML = '<p class="hint">시장 등급별 집계 불러오는 중…</p>';
+  let agg;
+  try { agg = await ensureProduceAgg(); }
+  catch (e) { grid.innerHTML = '<p class="hint">집계 로드 실패 — 잠시 후 다시 시도해주세요.</p>'; return; }
+  const ym = $('#produceMonthInput').value;
+  const grades = produceCardState.grade === 'all' ? ['상', '특'] : [produceCardState.grade];
+  const monthRows = agg.market.filter(mr => mr.ym === ym && grades.includes(mr.grade));
+
+  const cards = produceRowsCache.map(r => {
+    let sum = 0, w = 0, min = Infinity, max = -Infinity;
+    monthRows.forEach(mr => {
+      if (!isFuzzyItemMatch(r.item_name, mr.item_name)) return;
+      const n = Number(mr.n) || 0, v = Number(mr.avg_gpg);
+      if (!n || !isFinite(v)) return;
+      sum += v * n; w += n;
+      min = Math.min(min, Number(mr.min_gpg));
+      max = Math.max(max, Number(mr.max_gpg));
+    });
+    const mAvg = w ? sum / w : null;
+    const brand = r.brand_price_purchase ?? r.brand_price_direct;
+    // 절감액: 채널별 사용액 × (1 − 시장평균/채널단가) 합 — 표의 시장절감액과 같은 방식(등급 필터만 반영)
+    let savings = null;
+    if (mAvg != null) {
+      [[r.brand_price_direct, r.usage_amount_direct], [r.brand_price_purchase, r.usage_amount_purchase]].forEach(([p, amt]) => {
+        if (!p || !amt) return;
+        savings = (savings ?? 0) + amt * (1 - mAvg / p);
+      });
+    }
+    const pct = (brand != null && mAvg) ? (brand / mAvg - 1) * 100 : null;
+    return { ...r, brand, mAvg, mMin: isFinite(min) ? min : null, mMax: isFinite(max) ? max : null, savings, pct };
+  }).filter(c => !produceCardState.search || c.item_name.includes(produceCardState.search));
+
+  const s = produceCardState.sort;
+  cards.sort((a, b) => {
+    if (s === 'usage') return (b.usage_amount_total || 0) - (a.usage_amount_total || 0);
+    if (s === 'pct') return (b.pct ?? -Infinity) - (a.pct ?? -Infinity);
+    if (s === 'gpg') return (b.brand ?? -Infinity) - (a.brand ?? -Infinity);
+    if (s === 'name') return a.item_name.localeCompare(b.item_name, 'ko');
+    return (b.savings ?? -Infinity) - (a.savings ?? -Infinity);
+  });
+  const cnt = $('#produceCardCount');
+  if (cnt) cnt.textContent = `${cards.length}개 품목`;
+  grid.innerHTML = cards.map((c, i) => {
+    const cheapest = c.brand != null && c.mMin != null && c.brand <= c.mMin;
+    const savTxt = c.savings != null && c.savings > 0 ? `${fmtNum(c.savings / 10000, 0)}만원` : '—';
+    const pctTxt = c.pct != null ? `${c.pct > 0 ? '+' : ''}${fmtNum(c.pct, 1)}%` : '';
+    return `
+    <div class="pcard" data-item="${c.item_name}" title="클릭하면 ① 탭에서 월별 추이를 보여줍니다">
+      <div class="pcard-top">
+        <span class="pcard-rank">#${i + 1}</span>
+        ${cheapest ? '<span class="pcard-best">최저 납품가</span>' : ''}
+        <span class="pcard-price">${c.brand != null ? fmtNum(c.brand, 2) : '—'}<small>원/g</small></span>
+      </div>
+      <div class="pcard-name">${c.item_name}</div>
+      <div class="pcard-usage">총사용액 <b>${fmtNum((c.usage_amount_total || 0) / 10000, 0)}만원</b></div>
+      <div class="pcard-tags"><span>${produceCardState.grade === 'all' ? '상·특' : produceCardState.grade + '등급'}</span>${c.brand_price_direct != null ? '<span>직송</span>' : ''}${c.brand_price_purchase != null ? '<span>구매</span>' : ''}</div>
+      <div class="pcard-rows">
+        <div><span>시장 평균가</span><b>${c.mAvg != null ? fmtNum(c.mAvg, 3) : '—'} 원/g</b></div>
+        <div><span>시장 최저가</span><b>${c.mMin != null ? fmtNum(c.mMin, 3) : '—'} 원/g</b></div>
+        <div><span>시장 최고가</span><b>${c.mMax != null ? fmtNum(c.mMax, 3) : '—'} 원/g</b></div>
+      </div>
+      <div class="pcard-save"><span>절감 가능 금액</span><b>${savTxt}</b></div>
+      ${pctTxt ? `<div class="pcard-pct ${c.pct > 0 ? 'up' : 'dn'}">${pctTxt}</div>` : ''}
+    </div>`;
+  }).join('') || '<p class="hint">검색 결과가 없습니다.</p>';
+
+  // 카드 클릭 → ① 탭으로 가서 해당 품목 추이 펼침
+  $$('.pcard', grid).forEach(card => card.addEventListener('click', () => {
+    showProduceTab('table');
+    const tr = $(`#produceTableBody tr[data-item="${card.dataset.item}"]`);
+    if (tr) { tr.scrollIntoView({ block: 'center' }); toggleProduceChartRow(tr); }
+  }));
 }
 
 function renderProduceTable() {
@@ -3034,6 +3143,14 @@ function renderProduceTable() {
 
 $('#produceMonthInput').addEventListener('change', loadProduceMonitoring);
 $('#produceSortSelect').addEventListener('change', renderProduceTable);
+$$('.produce-subtab-btn').forEach(b => b.addEventListener('click', () => showProduceTab(b.dataset.produceTab)));
+$$('#produceGradeChips .chip').forEach(b => b.addEventListener('click', () => {
+  produceCardState.grade = b.dataset.grade;
+  $$('#produceGradeChips .chip').forEach(x => x.classList.toggle('is-on', x === b));
+  renderProduceCards();
+}));
+$('#produceCardSort').addEventListener('change', e => { produceCardState.sort = e.target.value; renderProduceCards(); });
+$('#produceCardSearch').addEventListener('input', e => { produceCardState.search = e.target.value.trim(); renderProduceCards(); });
 
 // 클릭한 품목 행 바로 아래에 추이 그래프를 펼쳐서 보여준다 (다른 품목 클릭 시 이전 것은 접힘)
 async function toggleProduceChartRow(tr) {
@@ -3057,39 +3174,36 @@ async function toggleProduceChartRow(tr) {
 
 async function loadProduceChart(itemName) {
   $('#produceChartTitle').textContent = `${itemName} — 월별 단가 추이`;
-  // 품목 필드가 비어 자재명으로 대체 표시된 경우와 매칭하려면 전체를 가져와 클라이언트에서 걸러야 함
-  // (특수문자가 섞인 자재명을 필터 문자열에 그대로 넣으면 PostgREST 쿼리가 깨질 수 있음)
-  const { data: allUsage } = await fetchAllRows('material_usage',
-    q => q.eq('remark', '농산').eq('tax_status', '비과세'));
-  const usageRows = (allUsage || []).filter(r => (r.item_name || r.material_name || '').trim() === itemName);
+  const wrapEl = $('#produceChartWrap');
+  if (wrapEl) wrapEl.innerHTML = '<p class="hint" style="padding:12px 0">추이 불러오는 중…</p>';
+  let agg;
+  try { agg = await ensureProduceAgg(); }
+  catch (e) {
+    console.error('produce agg load failed', e);
+    if (wrapEl) wrapEl.innerHTML = '<p class="hint" style="padding:12px 0">집계 로드에 실패했습니다 — 잠시 후 다시 클릭해주세요.</p>';
+    return;
+  }
 
   const byMonth = {};
-  (usageRows || []).forEach(r => {
-    if (!r.usage_month) return;
-    const key = r.usage_month.slice(0, 7);
-    const grams = (Number(r.actual_usage_qty) || 0) * (Number(r.conversion_factor) || 0);
-    const bucketKey = (r.material_name || '').includes('직송') ? 'direct' : 'purchase';
-    if (!byMonth[key]) byMonth[key] = { direct: { grams: 0, amount: 0 }, purchase: { grams: 0, amount: 0 } };
-    byMonth[key][bucketKey].grams += grams;
-    byMonth[key][bucketKey].amount += Number(r.actual_usage_amount) || 0;
+  agg.usage.forEach(r => {
+    if (r.item !== itemName || !r.ym) return;
+    if (!byMonth[r.ym]) byMonth[r.ym] = { direct: { grams: 0, amount: 0 }, purchase: { grams: 0, amount: 0 } };
+    const b = byMonth[r.ym][r.channel] || byMonth[r.ym].purchase;
+    b.grams += Number(r.grams) || 0;
+    b.amount += Number(r.amount) || 0;
   });
 
-  // 시장/목표 단가는 저장된 월별 캐시가 아니라 시장 데이터 원본에서 매월 직접 계산한다.
-  // (예전 방식은 그 달을 한 번이라도 조회해야만 값이 남아, 방문한 적 없는 달은 비어보이는 문제가 있었음)
-  // core 이름으로 서버 쪽에서 먼저 걸러서(ilike) 전체 시장데이터를 다 받아오지 않도록 한다.
-  const core = normalizeProduceName(itemName);
-  const { data: marketRows } = await fetchAllRows('market_prices',
-    q => q.in('grade', ['상', '특']).ilike('item_name', `%${core}%`));
-  const matches = (marketRows || []).filter(mr => isFuzzyItemMatch(itemName, mr.item_name));
-  const gpgByMonth = {};
-  matches.forEach(mr => {
-    const key = (mr.record_date || '').slice(0, 7);
-    const g = parseUnitToGrams(mr.unit);
-    if (!key || !g || mr.avg_price == null) return;
-    (gpgByMonth[key] = gpgByMonth[key] || []).push(mr.avg_price / g);
+  // 시장단가: 품목명 집계행에 퍼지 매칭 후 월별 가중평균(행수 n 가중 — 원본 행 단위 평균과 동일)
+  const sumByMonth = {}, wByMonth = {};
+  agg.market.forEach(mr => {
+    if (!isFuzzyItemMatch(itemName, mr.item_name)) return;
+    const w = Number(mr.n) || 0, v = Number(mr.avg_gpg);
+    if (!w || !isFinite(v)) return;
+    sumByMonth[mr.ym] = (sumByMonth[mr.ym] || 0) + v * w;
+    wByMonth[mr.ym] = (wByMonth[mr.ym] || 0) + w;
   });
   const marketByMonth = {};
-  Object.entries(gpgByMonth).forEach(([k, list]) => { marketByMonth[k] = list.reduce((a, v) => a + v, 0) / list.length; });
+  Object.keys(sumByMonth).forEach(k => { marketByMonth[k] = sumByMonth[k] / wByMonth[k]; });
 
   const actualMonths = [...new Set([...Object.keys(byMonth), ...Object.keys(marketByMonth)])].sort();
   // 최신 실데이터 달 다음 달부터 그 해 12월까지는 실적 없이 목표단가(작년 동월×0.9) 투사선만 이어서 보여준다
