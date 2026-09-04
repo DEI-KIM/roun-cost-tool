@@ -14,12 +14,12 @@
   <div class="ot-login-card">
     <span class="mark">로운 생산성</span>
     <h1>매장별 최적 TO</h1>
-    <p class="sub">예상 매출에 맞는 인력 투입 계획과 인건비율을 관리하는 내부 도구입니다. 사내 이메일(@eland.co.kr)로 인증 후 이용하세요.</p>
+    <p class="sub">예상 매출에 맞는 인력 투입 계획과 인건비율을 관리하는 내부 도구입니다. 원가설계판 계정으로 로그인하세요.</p>
     <form id="loginForm">
-      <label>사내 이메일<input type="email" id="loginEmail" required autocomplete="username" placeholder="name@eland.co.kr"></label>
-      <button type="submit" class="btn btn-primary" id="loginSubmit">인증 메일 받기</button>
+      <label>이메일<input type="email" id="loginEmail" required autocomplete="username"></label>
+      <label>비밀번호<input type="password" id="loginPassword" required autocomplete="current-password"></label>
+      <button type="submit" class="btn btn-primary">로그인</button>
       <p id="loginError" class="form-error" hidden></p>
-      <p id="loginSent" class="dnote" hidden>인증 메일을 보냈습니다. <b>메일함에서 로그인 링크를 눌러주세요</b> — 이 브라우저에서 열어야 하며, 한 번 인증하면 이후엔 자동 로그인됩니다.</p>
     </form>
   </div>
 </div>
@@ -199,6 +199,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="ot-seed.js?v=202609041415"></script>
-<script src="ot.js?v=202609041437"></script>
+<script src="ot.js?v=202609041523"></script>
 </body>
 </html>

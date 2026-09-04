@@ -25,34 +25,21 @@ let staffCnt = {};
 // ---------- 인증 ----------
 let currentUser = null, currentRole = 'planner';
 
-const ALLOWED_DOMAIN = '@eland.co.kr'; // 사내 메일만 — DB 트리거로도 이중 차단됨
-let appEntered = false;
-
 async function init() {
-  // 매직링크로 돌아온 경우 URL 해시의 세션을 supabase-js가 처리 — 상태 변화로도 진입
-  sb.auth.onAuthStateChange((event, session) => {
-    if (session && !appEntered) enterApp(session.user);
-    if (event === 'SIGNED_OUT') location.reload();
-  });
   const { data: { session } } = await sb.auth.getSession();
   if (session) enterApp(session.user); else showLogin();
 }
 function showLogin() { $('loginView').hidden = false; $('appView').hidden = true; }
 async function enterApp(user) {
-  if (appEntered) return;
-  appEntered = true;
   currentUser = user;
   $('loginView').hidden = true; $('appView').hidden = false;
   $('whoEmail').textContent = user.email;
-  // ot_profiles의 role 반영. 프로필이 없으면 조회 전용(쓰기는 RLS가 차단)
-  currentRole = 'viewer';
-  let myStore = null;
+  // profiles가 있으면 role 반영 (없으면 planner로 동작 — M1은 기획자 계정만)
   try {
     const { data } = await sb.from('ot_profiles').select('role,store_code').eq('user_id', user.id).maybeSingle();
-    if (data && data.role) { currentRole = data.role; myStore = data.store_code; }
-  } catch (e) { /* 무시 */ }
-  $('roleChip').textContent = currentRole === 'planner' ? '기획자'
-    : (currentRole === 'manager' && myStore) ? '매장 관리자' : '조회 전용';
+    if (data && data.role) currentRole = data.role;
+  } catch (e) { /* 테이블 미생성 시 무시 */ }
+  $('roleChip').textContent = currentRole === 'manager' ? '매장 관리자' : '기획자';
   // DB grades가 있으면 시드 대신 사용
   try {
     const { data } = await sb.from('ot_grades').select('grade,std_monthly_cost');
@@ -63,19 +50,11 @@ async function enterApp(user) {
 }
 $('loginForm').addEventListener('submit', async e => {
   e.preventDefault();
-  const err = $('loginError'), sent = $('loginSent'), btn = $('loginSubmit');
-  err.hidden = true; sent.hidden = true;
-  const email = $('loginEmail').value.trim().toLowerCase();
-  if (!email.endsWith(ALLOWED_DOMAIN)) {
-    err.textContent = '사내 이메일(' + ALLOWED_DOMAIN + ')만 사용할 수 있습니다.';
-    err.hidden = false; return;
-  }
-  btn.disabled = true; btn.textContent = '발송 중…';
-  const { error } = await sb.auth.signInWithOtp({
-    email, options: { emailRedirectTo: location.origin + location.pathname } });
-  btn.disabled = false; btn.textContent = '인증 메일 받기';
-  if (error) { err.textContent = '발송 실패: ' + error.message; err.hidden = false; return; }
-  sent.hidden = false;
+  $('loginError').hidden = true;
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: $('loginEmail').value.trim(), password: $('loginPassword').value });
+  if (error) { $('loginError').textContent = '로그인 실패: ' + error.message; $('loginError').hidden = false; return; }
+  enterApp(data.user);
 });
 $('logoutBtn').onclick = async () => { await sb.auth.signOut(); location.reload(); };
 

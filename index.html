@@ -13,14 +13,16 @@
   <div class="login-card">
     <div class="login-mark">로운</div>
     <h1>원가설계판</h1>
-    <p class="login-sub">시즌별 목표·설계 원가를 관리하는 내부 도구입니다. 사내 이메일(@eland.co.kr)로 인증 후 이용하세요.</p>
+    <p class="login-sub">시즌별 목표·설계 원가를 관리하는 내부 도구입니다.</p>
     <form id="loginForm">
-      <label>사내 이메일
-        <input type="email" id="loginEmail" required autocomplete="username" placeholder="name@eland.co.kr">
+      <label>이메일
+        <input type="email" id="loginEmail" required autocomplete="username">
       </label>
-      <button type="submit" class="btn btn-primary btn-block" id="loginSubmit">인증 메일 받기</button>
+      <label>비밀번호
+        <input type="password" id="loginPassword" required autocomplete="current-password">
+      </label>
+      <button type="submit" class="btn btn-primary btn-block">로그인</button>
       <p id="loginError" class="form-error" hidden></p>
-      <p id="loginSent" style="font-size:12px;color:#666" hidden>인증 메일을 보냈습니다. <b>메일함에서 로그인 링크를 눌러주세요</b> — 이 브라우저에서 열어야 하며, 한 번 인증하면 이후엔 자동 로그인됩니다.</p>
     </form>
   </div>
 </div>
@@ -681,6 +683,6 @@
 
 <script src="vendor/supabase.min.js"></script>
 <script src="vendor/xlsx.full.min.js"></script>
-<script src="app.js?v=202609041437"></script>
+<script src="app.js?v=202609041523"></script>
 </body>
 </html>
