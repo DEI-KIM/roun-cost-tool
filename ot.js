@@ -29,7 +29,8 @@ async function init() {
   const { data: { session } } = await sb.auth.getSession();
   if (session) enterApp(session.user); else showLogin();
 }
-function showLogin() { $('loginView').hidden = false; $('appView').hidden = true; }
+// 로그인은 랜딩(../)에서 통합 처리 — 세션 없으면 랜딩으로
+function showLogin() { location.replace('../'); }
 async function enterApp(user) {
   currentUser = user;
   $('loginView').hidden = true; $('appView').hidden = false;

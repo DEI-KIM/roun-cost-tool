@@ -3,11 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>로운 운영 시스템</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700&family=Noto+Sans+KR:wght@500;700&display=swap">
+<title>로운 수익 관리 시스템</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700&family=Noto+Sans+KR:wght@400;500;700&display=swap">
 <style>
-/* 로운 v8 체계 — 섹션 선택 랜딩 (독립 페이지라 스타일 내장) */
-body{margin:0;background:#fff;color:#131518;font-family:"Montserrat","Noto Sans KR","Malgun Gothic",sans-serif}
+/* 로운 v8 체계 — 통합 로그인 + 섹션 선택 랜딩 */
+body{margin:0;background:#fff;color:#131518;font-family:"Montserrat","Noto Sans KR","Malgun Gothic",sans-serif;font-size:14px}
+[hidden]{display:none!important}
 .wrap{max-width:720px;margin:0 auto;padding:64px 20px}
 .brand{font-weight:800;font-size:13px;letter-spacing:.08em}
 h1{font-weight:700;font-size:26px;margin:6px 0 4px}
@@ -19,18 +20,71 @@ a.card:hover{border-color:#82dc28;background:#f3fbe7}
 a.card .t{font-weight:700;font-size:16px}
 a.card .d{font-size:12px;color:#666;margin-top:4px;line-height:1.6}
 a.card .soon{display:inline-block;font-size:10px;font-weight:700;color:#888;background:#f6f6f6;border-radius:12px;padding:1px 8px;margin-left:6px}
+.who{display:flex;align-items:center;gap:10px;margin-top:26px;font-size:12px;color:#888}
+.who button{font:inherit;font-size:12px;border:1px solid #ddd;background:#fff;border-radius:5px;padding:5px 12px;cursor:pointer;color:#131518}
+/* 로그인 */
+.login-card{max-width:340px;border:1px solid #ebebeb;border-radius:4px;padding:28px 26px;margin-top:8px}
+.login-card label{display:block;font-size:12px;font-weight:500;color:#666;margin:12px 0 4px}
+.login-card input{width:100%;height:40px;border:1px solid #ddd;border-radius:5px;padding:0 12px;font:inherit;box-sizing:border-box}
+.login-card input:focus{outline:2px solid #82dc28;outline-offset:1px}
+.login-card button{width:100%;height:40px;margin-top:18px;font:inherit;font-weight:700;color:#fff;background:#2f3030;border:0;border-radius:5px;cursor:pointer}
+.login-card button:hover{background:#131518}
+.form-error{color:#d9534f;font-size:12px;margin:10px 0 0}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="brand">ROUN</div>
-  <h1>로운 운영 시스템</h1>
-  <p class="sub">섹션을 선택하세요 — 로그인은 각 섹션에서 공유됩니다.</p>
-  <div class="cards">
-    <a class="card" href="sales/"><span class="t">매출<span class="soon">준비중</span></span><div class="d">예상매출 · 일별매출</div></a>
-    <a class="card" href="labor/"><span class="t">생산성</span><div class="d">매장별 최적 TO · 계획 시뮬레이션 · 대시보드</div></a>
-    <a class="card" href="cost/"><span class="t">원가</span><div class="d">원가설계판 — 시즌설계 · 농산 모니터링 · 데이터</div></a>
+  <h1>로운 수익 관리 시스템</h1>
+
+  <!-- 로그인 (세션 없을 때) -->
+  <div id="loginView" hidden>
+    <p class="sub">매출 · 생산성 · 원가를 한 곳에서 — 로그인 후 이용하세요.</p>
+    <div class="login-card">
+      <form id="loginForm">
+        <label>이메일<input type="email" id="loginEmail" required autocomplete="username"></label>
+        <label>비밀번호<input type="password" id="loginPassword" required autocomplete="current-password"></label>
+        <button type="submit">로그인</button>
+        <p id="loginError" class="form-error" hidden></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- 섹션 선택 (로그인 후) -->
+  <div id="appView" hidden>
+    <p class="sub">섹션을 선택하세요.</p>
+    <div class="cards">
+      <a class="card" href="sales/"><span class="t">매출<span class="soon">준비중</span></span><div class="d">예상매출 · 일별매출</div></a>
+      <a class="card" href="labor/"><span class="t">생산성</span><div class="d">매장별 최적 TO · 계획 시뮬레이션 · 대시보드</div></a>
+      <a class="card" href="cost/"><span class="t">원가</span><div class="d">원가설계판 — 시즌설계 · 농산 모니터링 · 데이터</div></a>
+    </div>
+    <div class="who"><span id="whoEmail"></span><button id="logoutBtn" type="button">로그아웃</button></div>
   </div>
 </div>
+
+<script src="vendor/supabase.min.js"></script>
+<script>
+const sb = supabase.createClient('https://mnqgqgwdoztdbdyhjqyo.supabase.co',
+  'sb_publishable_V7ZsNdBMXGHxodVvI6mOTw_MB8PapC2');
+const $ = id => document.getElementById(id);
+function show(loggedIn, email) {
+  $('loginView').hidden = loggedIn;
+  $('appView').hidden = !loggedIn;
+  if (email) $('whoEmail').textContent = email;
+}
+(async () => {
+  const { data: { session } } = await sb.auth.getSession();
+  show(!!session, session?.user?.email);
+})();
+$('loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('loginError').hidden = true;
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: $('loginEmail').value.trim(), password: $('loginPassword').value });
+  if (error) { $('loginError').textContent = '로그인 실패: ' + error.message; $('loginError').hidden = false; return; }
+  show(true, data.user.email);
+});
+$('logoutBtn').onclick = async () => { await sb.auth.signOut(); show(false); };
+</script>
 </body>
 </html>

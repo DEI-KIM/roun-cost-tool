@@ -155,8 +155,10 @@ async function initAuth() {
 }
 
 function toggleView(loggedIn) {
-  $('#loginView').hidden = loggedIn;
-  $('#appView').hidden = !loggedIn;
+  // 로그인은 랜딩(../)에서 통합 처리 — 세션 없으면 랜딩으로
+  if (!loggedIn) { window.location.replace('../'); return; }
+  $('#loginView').hidden = true;
+  $('#appView').hidden = false;
 }
 
 $('#loginForm').addEventListener('submit', async (e) => {
