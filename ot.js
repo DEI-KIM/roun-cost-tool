@@ -17,8 +17,9 @@ const PARTS = ["카운터","프리버싱","프랩","콜파트","핫파트","육�
 const GRADE_ORDER = ["선임점장","점장","부점장","GM","매니저","캡틴","헤드","ST","TM","HIT"];
 const ENGINE_VERSION = 'ot-m1-v8';
 
-// 직급 단가: 시드 → (로그인 후 DB grades 있으면 교체)
-let gradeCost = { ...OT_GRADES };
+// 직급 단가는 기밀 — 클라이언트 코드에 없음. planner 로그인 시에만 DB(ot_grades)에서 로드,
+// 비-planner는 매장 급여 총액 기반 평균 단가로 폴백(직급별 단가 미노출).
+let gradeCost = null;
 // 매장별 직급 구성 상태 (시뮬레이션 입력)
 let staffCnt = {};
 
@@ -40,14 +41,21 @@ async function enterApp(user) {
     const { data } = await sb.from('ot_profiles').select('role,store_code').eq('user_id', user.id).maybeSingle();
     if (data && data.role) currentRole = data.role;
   } catch (e) { /* 테이블 미생성 시 무시 */ }
-  $('roleChip').textContent = currentRole === 'manager' ? '매장 관리자' : '기획자';
-  // DB grades가 있으면 시드 대신 사용
-  try {
-    const { data } = await sb.from('ot_grades').select('grade,std_monthly_cost');
-    if (data && data.length) for (const g of data) if (g.grade in gradeCost) gradeCost[g.grade] = g.std_monthly_cost;
-  } catch (e) { /* 미생성 시 시드 유지 */ }
-  renderDash(); renderRef(); buildPlanInputs(); render();
-  showView(currentRole === 'manager' ? 'plan' : 'dash'); // PRD §7: manager 홈 = S2
+  const isPlanner = currentRole === 'planner';
+  $('roleChip').textContent = isPlanner ? '기획자' : '매장 관리자';
+  // 직급 단가: planner만 DB에서 로드 (RLS가 비-planner 조회 차단)
+  if (isPlanner) {
+    try {
+      const { data } = await sb.from('ot_grades').select('grade,std_monthly_cost');
+      if (data && data.length) { gradeCost = {}; for (const g of data) gradeCost[g.grade] = g.std_monthly_cost; }
+    } catch (e) { /* 실패 시 평균 단가 폴백 */ }
+  }
+  // 기준정보·전사 대시보드는 planner 전용 (PRD §7)
+  document.querySelector('#otNav button[data-view="ref"]').hidden = !isPlanner;
+  document.querySelector('#otNav button[data-view="dash"]').hidden = !isPlanner;
+  if (isPlanner) { renderDash(); renderRef(); }
+  buildPlanInputs(); render();
+  showView(isPlanner ? 'dash' : 'plan');
 }
 $('loginForm').addEventListener('submit', async e => {
   e.preventDefault();
@@ -103,6 +111,7 @@ function renderDash() {
 
 // ---------- S5 기준정보 ----------
 function renderRef() {
+  if (!gradeCost) return; // 단가 미로드(비-planner) 방어
   let gh = '<table><colgroup><col><col style="width:130px"></colgroup><thead><tr><th>직급</th><th>월 표준 인건비(원)</th></tr></thead><tbody>';
   for (const g of GRADE_ORDER)
     gh += `<tr><td>${g}</td><td><input type="number" step="10000" data-grade="${g}" value="${gradeCost[g]}"></td></tr>`;
@@ -120,6 +129,7 @@ function renderRef() {
   $('coeffTable').innerHTML = ch + '</tbody></table>';
 }
 $('saveGradesBtn').onclick = async () => {
+  if (!gradeCost) return;
   const msg = $('gradeMsg'); msg.className = 'plan-msg'; msg.textContent = '저장 중…';
   const rows = GRADE_ORDER.map((g, i) => ({ grade: g, std_monthly_cost: gradeCost[g], sort: i }));
   const { error } = await sb.from('ot_grades').upsert(rows);
@@ -168,13 +178,22 @@ function loadStaff(code) {
   updateStaffSum();
 }
 function staffTotals(code) {
+  const s0 = OT_DATA[code];
   const nf = GRADE_ORDER.reduce((t, g) => t + (staffCnt[g] || 0), 0);
-  const base = GRADE_ORDER.reduce((t, g) => t + (staffCnt[g] || 0) * gradeCost[g], 0);
-  return { nf: Math.max(1, nf), fullpay: Math.max(0, base + (OT_DATA[code].payOff || 0)) };
+  let fullpay;
+  if (gradeCost) { // planner: 직급별 단가 정밀 계산
+    const base = GRADE_ORDER.reduce((t, g) => t + (staffCnt[g] || 0) * (gradeCost[g] || 0), 0);
+    fullpay = Math.max(0, base + (s0.payOff || 0));
+  } else { // 비-planner: 직급 단가 비공개 — 매장 실적 급여합 + 인원 증감×평균 단가
+    const avg = s0.fullpay / s0.nfull;
+    fullpay = Math.max(0, s0.fullpay + (Math.max(1, nf) - s0.nfull) * avg);
+  }
+  return { nf: Math.max(1, nf), fullpay };
 }
 function updateStaffSum() {
   const { nf, fullpay } = staffTotals(sel.value);
-  $('staffSum').innerHTML = `합계 <b>${nf}명</b> · 정직원 월급여 <b>${won(fullpay)}원</b> (직급 단가 합 + 매장 보정, 8월 실제 급여 기준)`;
+  $('staffSum').innerHTML = `합계 <b>${nf}명</b> · 정직원 월급여 <b>${won(fullpay)}원</b> ` +
+    (gradeCost ? '(직급 단가 합 + 매장 보정, 8월 실제 급여 기준)' : '(매장 급여 실적 기준, 인원 증감은 평균 단가로 추정)');
 }
 function onStoreChange() {
   $('msales').value = OT_DATA[sel.value].augM;
